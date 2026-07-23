@@ -1,2 +1,114 @@
 # leenustechs-cia-state
 Project for an open source students state machine
+
+```
+leenustechs-cia-state
+├─ LICENSE
+├─ README.md
+├─ pom.xml
+├─ src
+│  ├─ main
+│  │  ├─ java
+│  │  │  └─ mx
+│  │  │     └─ com
+│  │  │        └─ leenustechs
+│  │  │           ├─ App.java
+│  │  │           └─ ciaState
+│  │  │              ├─ business
+│  │  │              │  ├─ adapters
+│  │  │              │  │  ├─ in
+│  │  │              │  │  │  ├─ ApiInterceptor.java
+│  │  │              │  │  │  └─ ConfigApiProcessor.java
+│  │  │              │  │  └─ out
+│  │  │              │  │     └─ KafkaProducerAdapter.java
+│  │  │              │  ├─ services
+│  │  │              │  │  ├─ CommandDispatcherService.java
+│  │  │              │  │  └─ impl
+│  │  │              │  │     └─ CommandDispatcherServiceImpl.java
+│  │  │              │  ├─ useCases
+│  │  │              │  │  └─ CommonEventUseCase.java
+│  │  │              │  └─ utils
+│  │  │              │     ├─ commons
+│  │  │              │     │  ├─ CustomSerializer.java
+│  │  │              │     │  └─ EventOperation.java
+│  │  │              │     ├─ exceptions
+│  │  │              │     │  ├─ EmptyOperationResponseException.java
+│  │  │              │     │  └─ handlers
+│  │  │              │     └─ mappers
+│  │  │              │        └─ CommonModelMapper.java
+│  │  │              ├─ config
+│  │  │              │  ├─ FeingConfig.java
+│  │  │              │  ├─ InterceptorConfig.java
+│  │  │              │  ├─ JacksonConfig.java
+│  │  │              │  └─ KafkaConfig.java
+│  │  │              ├─ models
+│  │  │              │  ├─ CommonModel.java
+│  │  │              │  ├─ Event.java
+│  │  │              │  ├─ constants
+│  │  │              │  │  └─ KafkaTopics.java
+│  │  │              │  ├─ requests
+│  │  │              │  │  └─ CommonModelRequest.java
+│  │  │              │  ├─ responses
+│  │  │              │  │  └─ CommonModelResponse.java
+│  │  │              │  └─ types
+│  │  │              │     └─ OperationType.java
+│  │  │              └─ rest
+│  │  │                 ├─ ConfigApi.java
+│  │  │                 └─ GlobalExceptionHandler.java
+│  │  └─ resources
+│  │     ├─ application.properties
+│  │     └─ templates
+│  │        └─ hello.html
+│  └─ test
+│     ├─ java
+│     │  └─ mx
+│     │     └─ com
+│     │        └─ leenustechs
+│     └─ resources
+└─ target
+   ├─ classes
+   │  ├─ application.properties
+   │  ├─ mx
+   │  │  └─ com
+   │  │     └─ leenustechs
+   │  │        └─ ciaState
+   │  │           ├─ business
+   │  │           │  ├─ adapters
+   │  │           │  │  ├─ in
+   │  │           │  │  └─ out
+   │  │           │  ├─ services
+   │  │           │  │  └─ impl
+   │  │           │  ├─ useCases
+   │  │           │  └─ utils
+   │  │           │     ├─ commons
+   │  │           │     ├─ exceptions
+   │  │           │     │  └─ handlers
+   │  │           │     └─ mappers
+   │  │           ├─ config
+   │  │           ├─ models
+   │  │           │  ├─ constants
+   │  │           │  ├─ entities
+   │  │           │  ├─ requests
+   │  │           │  ├─ responses
+   │  │           │  └─ types
+   │  │           └─ rest
+   │  └─ templates
+   │     └─ hello.html
+   ├─ generated-sources
+   │  └─ annotations
+   │     └─ mx
+   │        └─ com
+   │           └─ leenustechs
+   │              └─ ciaState
+   │                 └─ business
+   │                    └─ utils
+   │                       └─ mappers
+   │                          └─ CommonModelMapperImpl.java
+   ├─ generated-test-sources
+   │  └─ test-annotations
+   └─ test-classes
+      └─ mx
+         └─ com
+            └─ leenustechs
+
+```
