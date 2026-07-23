@@ -1,7 +1,6 @@
 package mx.com.leenustechs.ciaState.models.entities;
 
 import java.time.Instant;
-import java.util.UUID;
 
 import org.springframework.data.redis.core.RedisHash;
 import org.springframework.data.redis.core.TimeToLive;
@@ -16,7 +15,6 @@ import tools.jackson.databind.JsonNode;
 @RedisHash("eventState")
 public class EventStateEntity {
     @Id
-    private UUID id;
     private String transactionId;
     private String producer;
     private OperationType command;

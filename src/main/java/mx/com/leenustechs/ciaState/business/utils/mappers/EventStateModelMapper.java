@@ -18,9 +18,5 @@ public interface EventStateModelMapper {
 
     EventStateModel toModel(EventStateEntity entity);
 
-    List<EventStateModel> toModels(List<EventStateEntity> entities);
-
     EventStateResponse toResponse(EventStateModel model);
-
-    List<EventStateResponse> toResponses(List<EventStateModel> models);
 }
