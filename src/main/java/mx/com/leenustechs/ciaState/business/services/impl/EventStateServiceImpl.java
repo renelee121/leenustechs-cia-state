@@ -1,7 +1,5 @@
 package mx.com.leenustechs.ciaState.business.services.impl;
 
-import java.util.Optional;
-
 import org.springframework.stereotype.Service;
 
 import lombok.RequiredArgsConstructor;
@@ -22,16 +20,15 @@ public class EventStateServiceImpl implements EventStateService{
 
     @Override
     public EventStateResponse findByTransactionId(String transactionId) {
-        Optional<EventStateEntity> entity =
-                eventStateRepository.findByTransactionId(transactionId);
-
-        if (entity.isEmpty()) {
-            throw new TransactionNotFoundException(transactionId);
-        }
+        EventStateEntity entity = eventStateRepository
+                .findById(transactionId)
+                .orElseThrow(() ->
+                        new TransactionNotFoundException(transactionId)
+                );
 
         return eventStateModelMapper.toResponse(
             eventStateModelMapper.toModel(
-                entity.get()
+                entity
             )
         );
     }
