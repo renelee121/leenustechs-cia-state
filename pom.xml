@@ -15,12 +15,12 @@
     </parent>
 
     <groupId>mx.com.leenustechs</groupId>
-    <artifactId>cia-api</artifactId>
+    <artifactId>cia-state</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>cia-api</name>
-    <description>API de CIA construida con Spring Boot y Java 21</description>
+    <name>cia-state</name>
+    <description>Maquina de estadis de CIA construida con Spring Boot y Java 21</description>
 
     <properties>
         <java.version>21</java.version>
@@ -80,6 +80,12 @@
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!--redis-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
         <!-- MapStruct API -->
