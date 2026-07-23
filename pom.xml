@@ -20,7 +20,7 @@
     <packaging>jar</packaging>
 
     <name>cia-state</name>
-    <description>Maquina de estadis de CIA construida con Spring Boot y Java 21</description>
+    <description>Maquina de estados de CIA construida con Spring Boot y Java 21</description>
 
     <properties>
         <java.version>21</java.version>
@@ -86,6 +86,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!--jpa-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
         <!-- MapStruct API -->
