@@ -1,6 +1,5 @@
 # leenustechs-cia-state
 Project for an open source students state machine
-
 ```
 leenustechs-cia-state
 ├─ LICENSE
@@ -18,9 +17,10 @@ leenustechs-cia-state
 │  │  │              │  ├─ adapters
 │  │  │              │  │  ├─ in
 │  │  │              │  │  │  ├─ ApiInterceptor.java
-│  │  │              │  │  │  └─ ConfigApiProcessor.java
+│  │  │              │  │  │  └─ KafkaListenerAdapter.java
 │  │  │              │  │  └─ out
 │  │  │              │  │     └─ KafkaProducerAdapter.java
+│  │  │              │  ├─ repositories
 │  │  │              │  ├─ services
 │  │  │              │  │  ├─ CommandDispatcherService.java
 │  │  │              │  │  └─ impl
@@ -29,6 +29,7 @@ leenustechs-cia-state
 │  │  │              │  │  └─ CommonEventUseCase.java
 │  │  │              │  └─ utils
 │  │  │              │     ├─ commons
+│  │  │              │     │  ├─ CustomDeserializer.java
 │  │  │              │     │  ├─ CustomSerializer.java
 │  │  │              │     │  └─ EventOperation.java
 │  │  │              │     ├─ exceptions
@@ -46,6 +47,7 @@ leenustechs-cia-state
 │  │  │              │  ├─ Event.java
 │  │  │              │  ├─ constants
 │  │  │              │  │  └─ KafkaTopics.java
+│  │  │              │  ├─ entities
 │  │  │              │  ├─ requests
 │  │  │              │  │  └─ CommonModelRequest.java
 │  │  │              │  ├─ responses
@@ -53,8 +55,6 @@ leenustechs-cia-state
 │  │  │              │  └─ types
 │  │  │              │     └─ OperationType.java
 │  │  │              └─ rest
-│  │  │                 ├─ ConfigApi.java
-│  │  │                 └─ GlobalExceptionHandler.java
 │  │  └─ resources
 │  │     ├─ application.properties
 │  │     └─ templates
@@ -82,16 +82,13 @@ leenustechs-cia-state
    │  │           │  └─ utils
    │  │           │     ├─ commons
    │  │           │     ├─ exceptions
-   │  │           │     │  └─ handlers
    │  │           │     └─ mappers
    │  │           ├─ config
-   │  │           ├─ models
-   │  │           │  ├─ constants
-   │  │           │  ├─ entities
-   │  │           │  ├─ requests
-   │  │           │  ├─ responses
-   │  │           │  └─ types
-   │  │           └─ rest
+   │  │           └─ models
+   │  │              ├─ constants
+   │  │              ├─ requests
+   │  │              ├─ responses
+   │  │              └─ types
    │  └─ templates
    │     └─ hello.html
    ├─ generated-sources
@@ -106,9 +103,18 @@ leenustechs-cia-state
    │                          └─ CommonModelMapperImpl.java
    ├─ generated-test-sources
    │  └─ test-annotations
+   ├─ maven-archiver
+   │  └─ pom.properties
+   ├─ maven-status
+   │  └─ maven-compiler-plugin
+   │     ├─ compile
+   │     │  └─ default-compile
+   │     │     ├─ createdFiles.lst
+   │     │     └─ inputFiles.lst
+   │     └─ testCompile
+   │        └─ default-testCompile
+   │           ├─ createdFiles.lst
+   │           └─ inputFiles.lst
    └─ test-classes
-      └─ mx
-         └─ com
-            └─ leenustechs
 
 ```
