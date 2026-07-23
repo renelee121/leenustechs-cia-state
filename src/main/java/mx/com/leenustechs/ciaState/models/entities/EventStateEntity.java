@@ -5,7 +5,7 @@ import java.time.Instant;
 import org.springframework.data.redis.core.RedisHash;
 import org.springframework.data.redis.core.TimeToLive;
 
-import jakarta.persistence.Id;
+import org.springframework.data.annotation.Id;
 import lombok.Data;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
