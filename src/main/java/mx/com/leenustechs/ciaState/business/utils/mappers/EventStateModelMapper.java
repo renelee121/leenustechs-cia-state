@@ -7,7 +7,6 @@ import org.mapstruct.MappingConstants;
 import org.mapstruct.MappingTarget;
 import org.mapstruct.ReportingPolicy;
 
-import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.EventStateModel;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
@@ -24,14 +23,15 @@ public interface EventStateModelMapper {
     EventStateResponse toResponse(EventStateModel model);
 
     @Mapping(target = "payload", ignore = true)
-    void updateFromCommonModel(
-        CommonModel source,
-        @MappingTarget EventStateModel target
+    @Mapping(target = "ttl", ignore = true)
+    void updateFromModel(
+        EventStateModel source,
+        @MappingTarget EventStateEntity target
     );
 
     default void mergePayload(
-            CommonModel source,
-            @MappingTarget EventStateModel target) {
+            EventStateModel source,
+            @MappingTarget EventStateEntity target) {
 
         if (source.getPayload() == null) {
             return;
@@ -50,8 +50,8 @@ public interface EventStateModelMapper {
 
     @AfterMapping
     default void afterMapping(
-            CommonModel source,
-            @MappingTarget EventStateModel target) {
+            EventStateModel source,
+            @MappingTarget EventStateEntity target) {
 
         mergePayload(source, target);
     }
