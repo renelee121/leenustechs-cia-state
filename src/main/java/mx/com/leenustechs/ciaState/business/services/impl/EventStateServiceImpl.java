@@ -1,6 +1,7 @@
 package mx.com.leenustechs.ciaState.business.services.impl;
 
 import java.time.Instant;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 
@@ -42,12 +43,45 @@ public class EventStateServiceImpl implements EventStateService{
     }
 
     @Override
-    public EventStateResponse save(CommonModel event, TransactionStatus status,
-            String currentStep, String nextStep, JsonNode result) {
-        EventStateModel model = eventStateInputMapper.toEventStateModel(event, status, currentStep, nextStep, result, Instant.now(), Instant.now());
-        throw new UnsupportedOperationException("Unimplemented method 'save'");
-    }
+    public EventStateResponse save(
+            CommonModel event,
+            TransactionStatus status,
+            String currentStep,
+            String nextStep,
+            JsonNode result) {
 
-    
-    
+        Instant now = Instant.now();
+
+        EventStateModel model = eventStateInputMapper.toEventStateModel(
+                event,
+                status,
+                currentStep,
+                nextStep,
+                result,
+                now,
+                now
+        );
+
+        EventStateEntity entity = eventStateRepository
+                .findById(model.getTransactionId())
+                .map(existing -> {
+                    eventStateModelMapper.updateFromModel(model, existing);
+                    return existing;
+                })
+                .orElseGet(() -> {
+                    EventStateEntity created =
+                            eventStateModelMapper.toEntity(model);
+
+                    created.setTtl(300L);
+
+                    return created;
+                });
+
+        EventStateEntity saved =
+                eventStateRepository.save(entity);
+
+        return eventStateModelMapper.toResponse(
+                eventStateModelMapper.toModel(saved)
+        );
+    }
 }

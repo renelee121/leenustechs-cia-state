@@ -22,8 +22,12 @@ public interface EventStateModelMapper {
 
     EventStateResponse toResponse(EventStateModel model);
 
+    @Mapping(target = "ttl", ignore = true)
+    EventStateEntity toEntity(EventStateModel model);
+
     @Mapping(target = "payload", ignore = true)
     @Mapping(target = "ttl", ignore = true)
+    @Mapping(target = "createdAt", ignore = true)
     void updateFromModel(
         EventStateModel source,
         @MappingTarget EventStateEntity target
