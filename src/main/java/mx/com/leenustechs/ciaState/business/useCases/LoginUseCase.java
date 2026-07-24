@@ -41,6 +41,11 @@ public class LoginUseCase implements EventOperation {
                 "Executing login use case. transactionId={}, producer={}",
                 event.getTransactionId(),
                 event.getProducer());
+        
+        if ("API".equals(event.getProducer())) {
+            publishStage(event, sequence.getFirst());
+            return commonModelMapper.toResponse(event);
+        }
 
         StepType producerStep = StepType.valueOf(event.getProducer());
 
