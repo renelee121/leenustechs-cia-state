@@ -19,4 +19,9 @@ public class KafkaListenerAdapter {
     public void lobbyListener(CommonModel event){
         operationTypeService.execute(event);
     }
+    
+    @KafkaListener(topics = KafkaTopics.LEENUSTECHS_CIA_RESPONSE, containerFactory = "kafkaListenerContainerFactory")
+    public void responseListener(CommonModel event){
+        operationTypeService.execute(event);
+    }
 }
