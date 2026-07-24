@@ -12,6 +12,6 @@ public class EventStateResponse {
     private String transactionId;
     private OperationType command;
     private TransactionStatus status;
-    private String currentStep;
+    private Integer currentStage;
     private JsonNode result;
 }

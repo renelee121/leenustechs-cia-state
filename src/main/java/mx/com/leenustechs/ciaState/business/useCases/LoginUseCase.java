@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import mx.com.leenustechs.ciaState.business.adapters.out.KafkaProducerAdapter;
+import mx.com.leenustechs.ciaState.business.services.EventStateService;
 import mx.com.leenustechs.ciaState.business.utils.commons.EventOperation;
 import mx.com.leenustechs.ciaState.business.utils.commons.StageUtils;
 import mx.com.leenustechs.ciaState.business.utils.mappers.CommonModelMapper;
@@ -17,14 +18,11 @@ import mx.com.leenustechs.ciaState.models.records.WorkflowStage;
 import mx.com.leenustechs.ciaState.models.responses.CommonModelResponse;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.StepType;
-import tools.jackson.databind.node.ObjectNode;
 
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class LoginUseCase implements EventOperation {
-    private final CommonModelMapper commonModelMapper;
-    private final KafkaProducerAdapter kafkaProducerAdapter;
     private static final List<WorkflowStage> sequence = List.of(
             WorkflowStage.single(StepType.SECURITY),
             WorkflowStage.parallel(
@@ -33,6 +31,10 @@ public class LoginUseCase implements EventOperation {
                     StepType.PREFERENCES,
                     StepType.ROLES),
             WorkflowStage.single(StepType.MODULES));
+            
+    private final CommonModelMapper commonModelMapper;
+    private final KafkaProducerAdapter kafkaProducerAdapter;
+    private final EventStateService eventStateService;
 
     @Override
     public CommonModelResponse execute(CommonModel event) {

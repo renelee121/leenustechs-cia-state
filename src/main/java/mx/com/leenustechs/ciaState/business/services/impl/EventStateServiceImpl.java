@@ -1,7 +1,7 @@
 package mx.com.leenustechs.ciaState.business.services.impl;
 
 import java.time.Instant;
-import java.util.Optional;
+import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
@@ -15,6 +15,8 @@ import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.EventStateModel;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
+import mx.com.leenustechs.ciaState.models.types.StepStatus;
+import mx.com.leenustechs.ciaState.models.types.StepType;
 import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 import tools.jackson.databind.JsonNode;
 
@@ -46,8 +48,8 @@ public class EventStateServiceImpl implements EventStateService{
     public EventStateResponse save(
             CommonModel event,
             TransactionStatus status,
-            String currentStep,
-            String nextStep,
+            Integer currentStage,
+            Map<StepType, StepStatus> steps,
             JsonNode result) {
 
         Instant now = Instant.now();
@@ -55,8 +57,8 @@ public class EventStateServiceImpl implements EventStateService{
         EventStateModel model = eventStateInputMapper.toEventStateModel(
                 event,
                 status,
-                currentStep,
-                nextStep,
+                currentStage,
+                steps,
                 result,
                 now,
                 now
