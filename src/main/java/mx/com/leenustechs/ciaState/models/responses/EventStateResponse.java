@@ -1,8 +1,12 @@
 package mx.com.leenustechs.ciaState.models.responses;
 
+import java.util.Map;
+
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
+import mx.com.leenustechs.ciaState.models.types.StepStatus;
+import mx.com.leenustechs.ciaState.models.types.StepType;
 import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 import tools.jackson.databind.JsonNode;
 
@@ -13,5 +17,6 @@ public class EventStateResponse {
     private OperationType command;
     private TransactionStatus status;
     private Integer currentStage;
+    private Map<StepType, StepStatus> steps;
     private JsonNode result;
 }

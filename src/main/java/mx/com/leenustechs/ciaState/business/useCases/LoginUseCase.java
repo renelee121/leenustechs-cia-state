@@ -1,7 +1,9 @@
 package mx.com.leenustechs.ciaState.business.useCases;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Component;
 
@@ -16,8 +18,11 @@ import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.constants.KafkaTopics;
 import mx.com.leenustechs.ciaState.models.records.WorkflowStage;
 import mx.com.leenustechs.ciaState.models.responses.CommonModelResponse;
+import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
+import mx.com.leenustechs.ciaState.models.types.StepStatus;
 import mx.com.leenustechs.ciaState.models.types.StepType;
+import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 
 @Slf4j
 @Component
@@ -31,7 +36,7 @@ public class LoginUseCase implements EventOperation {
                     StepType.PREFERENCES,
                     StepType.ROLES),
             WorkflowStage.single(StepType.MODULES));
-            
+
     private final CommonModelMapper commonModelMapper;
     private final KafkaProducerAdapter kafkaProducerAdapter;
     private final EventStateService eventStateService;
@@ -43,8 +48,20 @@ public class LoginUseCase implements EventOperation {
                 "Executing login use case. transactionId={}, producer={}",
                 event.getTransactionId(),
                 event.getProducer());
-        
+
         if ("API".equals(event.getProducer())) {
+
+            eventStateService.save(
+                    event,
+                    TransactionStatus.PROCESSING,
+                    0,
+                    Map.of(
+                            StepType.SECURITY,
+                            StepStatus.PROCESSING
+                    ),
+                    null
+            );
+
             publishStage(event, sequence.getFirst());
             return commonModelMapper.toResponse(event);
         }
@@ -58,13 +75,49 @@ public class LoginUseCase implements EventOperation {
                     "Producer not found in LOGIN workflow: " + event.getProducer());
         }
 
+        EventStateResponse state = eventStateService.save(
+                event,
+                TransactionStatus.PROCESSING,
+                currentStageIndex,
+                Map.of(
+                        producerStep,
+                        StepStatus.COMPLETE),
+                null);
+
+        WorkflowStage currentStage = sequence.get(currentStageIndex);
+
+        boolean stageComplete = currentStage.steps()
+                .stream()
+                .allMatch(step ->
+                        state.getSteps().get(step) == StepStatus.COMPLETE
+                );
+
+        if (!stageComplete) {
+            return commonModelMapper.toResponse(event);
+        }
+
         int nextStageIndex = currentStageIndex + 1;
 
         if (nextStageIndex >= sequence.size()) {
-            return complete(event);
+            return complete(event,currentStageIndex);
         }
 
         WorkflowStage nextStage = sequence.get(nextStageIndex);
+
+        Map<StepType, StepStatus> nextSteps = nextStage.steps()
+                .stream()
+                .collect(Collectors.toMap(
+                        step -> step,
+                        step -> StepStatus.PROCESSING
+                ));
+
+        eventStateService.save(
+                event,
+                TransactionStatus.PROCESSING,
+                nextStageIndex,
+                nextSteps,
+                null
+        );
 
         publishStage(event, nextStage);
 
@@ -88,11 +141,24 @@ public class LoginUseCase implements EventOperation {
         return Set.of(OperationType.LOGIN);
     }
 
-    private CommonModelResponse complete(CommonModel event) {
+    private CommonModelResponse complete(
+        CommonModel event,
+        int currentStageIndex) {
 
         log.info(
                 "Completing LOGIN workflow. transactionId={}",
                 event.getTransactionId());
+
+        eventStateService.save(
+                event,
+                TransactionStatus.COMPLETED,
+                currentStageIndex,
+                Map.of(
+                        StepType.MODULES,
+                        StepStatus.COMPLETE
+                ),
+                event.getPayload()
+        );
 
         CommonModelResponse response = commonModelMapper.toResponse(event);
 
