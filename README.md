@@ -21,39 +21,55 @@ leenustechs-cia-state
 │  │  │              │  │  └─ out
 │  │  │              │  │     └─ KafkaProducerAdapter.java
 │  │  │              │  ├─ repositories
+│  │  │              │  │  └─ EventStateRepository.java
 │  │  │              │  ├─ services
 │  │  │              │  │  ├─ CommandDispatcherService.java
+│  │  │              │  │  ├─ EventStateService.java
 │  │  │              │  │  └─ impl
-│  │  │              │  │     └─ CommandDispatcherServiceImpl.java
+│  │  │              │  │     ├─ CommandDispatcherServiceImpl.java
+│  │  │              │  │     └─ EventStateServiceImpl.java
 │  │  │              │  ├─ useCases
-│  │  │              │  │  └─ CommonEventUseCase.java
+│  │  │              │  │  └─ LoginUseCase.java
 │  │  │              │  └─ utils
 │  │  │              │     ├─ commons
 │  │  │              │     │  ├─ CustomDeserializer.java
 │  │  │              │     │  ├─ CustomSerializer.java
-│  │  │              │     │  └─ EventOperation.java
+│  │  │              │     │  ├─ EventOperation.java
+│  │  │              │     │  └─ StageUtils.java
 │  │  │              │     ├─ exceptions
 │  │  │              │     │  ├─ EmptyOperationResponseException.java
+│  │  │              │     │  ├─ TransactionNotFoundException.java
 │  │  │              │     │  └─ handlers
 │  │  │              │     └─ mappers
-│  │  │              │        └─ CommonModelMapper.java
+│  │  │              │        ├─ CommonModelMapper.java
+│  │  │              │        ├─ EventStateInputMapper.java
+│  │  │              │        └─ EventStateModelMapper.java
 │  │  │              ├─ config
 │  │  │              │  ├─ FeingConfig.java
 │  │  │              │  ├─ InterceptorConfig.java
 │  │  │              │  ├─ JacksonConfig.java
-│  │  │              │  └─ KafkaConfig.java
+│  │  │              │  ├─ KafkaConfig.java
+│  │  │              │  └─ RedisConfig.java
 │  │  │              ├─ models
 │  │  │              │  ├─ CommonModel.java
 │  │  │              │  ├─ Event.java
+│  │  │              │  ├─ EventStateModel.java
 │  │  │              │  ├─ constants
 │  │  │              │  │  └─ KafkaTopics.java
 │  │  │              │  ├─ entities
+│  │  │              │  │  └─ EventStateEntity.java
+│  │  │              │  ├─ records
+│  │  │              │  │  └─ WorkflowStage.java
 │  │  │              │  ├─ requests
 │  │  │              │  │  └─ CommonModelRequest.java
 │  │  │              │  ├─ responses
-│  │  │              │  │  └─ CommonModelResponse.java
+│  │  │              │  │  ├─ CommonModelResponse.java
+│  │  │              │  │  └─ EventStateResponse.java
 │  │  │              │  └─ types
-│  │  │              │     └─ OperationType.java
+│  │  │              │     ├─ OperationType.java
+│  │  │              │     ├─ StepStatus.java
+│  │  │              │     ├─ StepType.java
+│  │  │              │     └─ TransactionStatus.java
 │  │  │              └─ rest
 │  │  └─ resources
 │  │     ├─ application.properties
@@ -76,6 +92,7 @@ leenustechs-cia-state
    │  │           │  ├─ adapters
    │  │           │  │  ├─ in
    │  │           │  │  └─ out
+   │  │           │  ├─ repositories
    │  │           │  ├─ services
    │  │           │  │  └─ impl
    │  │           │  ├─ useCases
@@ -86,6 +103,8 @@ leenustechs-cia-state
    │  │           ├─ config
    │  │           └─ models
    │  │              ├─ constants
+   │  │              ├─ entities
+   │  │              ├─ records
    │  │              ├─ requests
    │  │              ├─ responses
    │  │              └─ types
@@ -100,7 +119,9 @@ leenustechs-cia-state
    │                 └─ business
    │                    └─ utils
    │                       └─ mappers
-   │                          └─ CommonModelMapperImpl.java
+   │                          ├─ CommonModelMapperImpl.java
+   │                          ├─ EventStateInputMapperImpl.java
+   │                          └─ EventStateModelMapperImpl.java
    ├─ generated-test-sources
    │  └─ test-annotations
    ├─ maven-archiver
