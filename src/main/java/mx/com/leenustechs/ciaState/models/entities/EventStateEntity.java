@@ -24,6 +24,7 @@ public class EventStateEntity {
     private TransactionStatus status;
     private Integer currentStage;
     private Map<StepType, StepStatus> steps;
+    private Map<Integer, StepStatus> completedStages;
     private JsonNode payload;
     private JsonNode result;
     private Instant createdAt;

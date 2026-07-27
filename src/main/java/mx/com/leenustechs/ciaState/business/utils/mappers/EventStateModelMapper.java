@@ -27,6 +27,7 @@ public interface EventStateModelMapper {
 
     @Mapping(target = "payload", ignore = true)
     @Mapping(target = "steps", ignore = true)
+    @Mapping(target = "completedStages", ignore = true)
     @Mapping(target = "ttl", ignore = true)
     @Mapping(target = "createdAt", ignore = true)
     void updateFromModel(

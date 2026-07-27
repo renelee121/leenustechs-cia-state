@@ -12,9 +12,9 @@ import mx.com.leenustechs.ciaState.business.utils.commons.StageUtils;
 import mx.com.leenustechs.ciaState.business.utils.mappers.CommonModelMapper;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.constants.KafkaTopics;
+import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.records.WorkflowStage;
 import mx.com.leenustechs.ciaState.models.responses.CommonModelResponse;
-import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
 import mx.com.leenustechs.ciaState.models.types.StepType;
 import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
@@ -71,18 +71,25 @@ public abstract class AbstractWorkflowUseCase implements EventOperation {
             return fail(event, producerStep, currentStageIndex);
         }
 
-        EventStateResponse state = eventStateService.save(
+        StepTransitionResult transition = eventStateService.transitionStep(
                 event,
                 TransactionStatus.PROCESSING,
                 currentStageIndex,
-                Map.of(producerStep, StepStatus.COMPLETE),
+                producerStep,
+                StepStatus.COMPLETE,
                 null);
 
-        WorkflowStage currentStage = stages.get(currentStageIndex);
-        boolean stageComplete = currentStage.steps().stream()
-                .allMatch(step -> state.getSteps().get(step) == StepStatus.COMPLETE);
+        if (!transition.applied()) {
+            return commonModelMapper.toResponse(event);
+        }
 
-        if (!stageComplete) {
+        WorkflowStage currentStage = stages.get(currentStageIndex);
+        boolean stageClaimed = eventStateService.claimStageCompletion(
+                event.getTransactionId(),
+                currentStageIndex,
+                currentStage.steps());
+
+        if (!stageClaimed) {
             return commonModelMapper.toResponse(event);
         }
 
@@ -166,12 +173,17 @@ public abstract class AbstractWorkflowUseCase implements EventOperation {
                 producerStep,
                 failureType(event));
 
-        eventStateService.save(
+        StepTransitionResult transition = eventStateService.transitionStep(
                 event,
                 TransactionStatus.FAILED,
                 currentStageIndex,
-                Map.of(producerStep, StepStatus.ERROR),
+                producerStep,
+                StepStatus.ERROR,
                 event.getPayload());
+
+        if (!transition.applied()) {
+            return commonModelMapper.toResponse(event);
+        }
 
         CommonModelResponse response = commonModelMapper.toResponse(event);
         publishCompleted(event, response);

@@ -21,6 +21,7 @@ import mx.com.leenustechs.ciaState.business.services.EventStateService;
 import mx.com.leenustechs.ciaState.business.utils.mappers.CommonModelMapper;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.constants.KafkaTopics;
+import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.responses.CommonModelResponse;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
@@ -79,16 +80,25 @@ class LoginUseCaseTest {
                 StepType.PREFERENCES, StepStatus.COMPLETE,
                 StepType.ROLES, StepStatus.COMPLETE));
 
-        when(eventStateService.save(
+        when(eventStateService.transitionStep(
                 eq(event),
                 eq(TransactionStatus.PROCESSING),
                 eq(1),
-                eq(Map.of(StepType.STUDENTS, StepStatus.COMPLETE)),
+                eq(StepType.STUDENTS),
+                eq(StepStatus.COMPLETE),
                 eq(null)))
-                .thenReturn(state);
+                .thenReturn(new StepTransitionResult(state, true));
 
         useCase.execute(event);
 
+        verify(eventStateService).claimStageCompletion(
+                event.getTransactionId(),
+                1,
+                java.util.List.of(
+                        StepType.STUDENTS,
+                        StepType.ASSETS,
+                        StepType.PREFERENCES,
+                        StepType.ROLES));
         verify(kafkaProducerAdapter, never())
                 .publish(any(), any(), any());
     }
@@ -99,13 +109,19 @@ class LoginUseCaseTest {
         EventStateResponse state = stateWith(
                 Map.of(StepType.SECURITY, StepStatus.COMPLETE));
 
-        when(eventStateService.save(
+        when(eventStateService.transitionStep(
                 eq(event),
                 eq(TransactionStatus.PROCESSING),
                 eq(0),
-                eq(Map.of(StepType.SECURITY, StepStatus.COMPLETE)),
+                eq(StepType.SECURITY),
+                eq(StepStatus.COMPLETE),
                 eq(null)))
-                .thenReturn(state);
+                .thenReturn(new StepTransitionResult(state, true));
+        when(eventStateService.claimStageCompletion(
+                event.getTransactionId(),
+                0,
+                java.util.List.of(StepType.SECURITY)))
+                .thenReturn(true);
 
         useCase.execute(event);
 
@@ -136,13 +152,19 @@ class LoginUseCaseTest {
         EventStateResponse state = stateWith(
                 Map.of(StepType.MODULES, StepStatus.COMPLETE));
 
-        when(eventStateService.save(
+        when(eventStateService.transitionStep(
                 eq(event),
                 eq(TransactionStatus.PROCESSING),
                 eq(2),
-                eq(Map.of(StepType.MODULES, StepStatus.COMPLETE)),
+                eq(StepType.MODULES),
+                eq(StepStatus.COMPLETE),
                 eq(null)))
-                .thenReturn(state);
+                .thenReturn(new StepTransitionResult(state, true));
+        when(eventStateService.claimStageCompletion(
+                event.getTransactionId(),
+                2,
+                java.util.List.of(StepType.MODULES)))
+                .thenReturn(true);
         when(commonModelMapper.toResponse(event)).thenReturn(response);
 
         useCase.execute(event);
@@ -171,15 +193,26 @@ class LoginUseCaseTest {
                 event.getCommand(),
                 event.getPayload());
 
+        when(eventStateService.transitionStep(
+                event,
+                TransactionStatus.FAILED,
+                0,
+                StepType.SECURITY,
+                StepStatus.ERROR,
+                payload))
+                .thenReturn(new StepTransitionResult(
+                        new EventStateResponse(),
+                        true));
         when(commonModelMapper.toResponse(event)).thenReturn(response);
 
         useCase.execute(event);
 
-        verify(eventStateService).save(
+        verify(eventStateService).transitionStep(
                 event,
                 TransactionStatus.FAILED,
                 0,
-                Map.of(StepType.SECURITY, StepStatus.ERROR),
+                StepType.SECURITY,
+                StepStatus.ERROR,
                 payload);
         verify(kafkaProducerAdapter).publish(
                 KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE,
@@ -202,15 +235,26 @@ class LoginUseCaseTest {
                 event.getCommand(),
                 event.getPayload());
 
+        when(eventStateService.transitionStep(
+                event,
+                TransactionStatus.FAILED,
+                1,
+                StepType.ASSETS,
+                StepStatus.ERROR,
+                payload))
+                .thenReturn(new StepTransitionResult(
+                        new EventStateResponse(),
+                        true));
         when(commonModelMapper.toResponse(event)).thenReturn(response);
 
         useCase.execute(event);
 
-        verify(eventStateService).save(
+        verify(eventStateService).transitionStep(
                 event,
                 TransactionStatus.FAILED,
                 1,
-                Map.of(StepType.ASSETS, StepStatus.ERROR),
+                StepType.ASSETS,
+                StepStatus.ERROR,
                 payload);
         verify(kafkaProducerAdapter).publish(
                 KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE,
@@ -220,6 +264,31 @@ class LoginUseCaseTest {
                 eq(StepType.MODULES.getTopic()),
                 any(),
                 any());
+    }
+
+    @Test
+    void ignoresDuplicateCompletedStepWithoutPublishingAgain() {
+        CommonModel event = eventFrom(StepType.SECURITY.name());
+        EventStateResponse state = stateWith(
+                Map.of(StepType.SECURITY, StepStatus.COMPLETE));
+
+        when(eventStateService.transitionStep(
+                event,
+                TransactionStatus.PROCESSING,
+                0,
+                StepType.SECURITY,
+                StepStatus.COMPLETE,
+                null))
+                .thenReturn(new StepTransitionResult(state, false));
+
+        useCase.execute(event);
+
+        verify(eventStateService, never()).claimStageCompletion(
+                any(),
+                any(),
+                any());
+        verify(kafkaProducerAdapter, never())
+                .publish(any(), any(), any());
     }
 
     private CommonModel eventFrom(String producer) {
