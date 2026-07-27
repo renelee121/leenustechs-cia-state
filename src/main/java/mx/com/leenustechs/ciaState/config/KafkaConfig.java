@@ -63,6 +63,9 @@ public class KafkaConfig {
         configProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBootstrapServers);
         configProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         configProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, CustomSerializer.class);
+        configProps.put("security.protocol", SECURITY_PROTOCOL);
+        configProps.put("sasl.mechanism", SASL_MECHANISM);
+        configProps.put("sasl.jaas.config", getSaslJaasConfig());
         return new DefaultKafkaProducerFactory<>(configProps);
     }
 
