@@ -23,6 +23,9 @@ import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 public abstract class AbstractWorkflowUseCase implements EventOperation {
 
     private static final String INITIAL_PRODUCER = "API";
+    private static final String ERROR_CODE = "error_code";
+    private static final String ERROR_MESSAGE = "error_message";
+    private static final String EXCEPTION = "exception";
 
     private final CommonModelMapper commonModelMapper;
     private final KafkaProducerAdapter kafkaProducerAdapter;
@@ -62,6 +65,10 @@ public abstract class AbstractWorkflowUseCase implements EventOperation {
             throw new IllegalStateException(
                     "Producer not found in %s workflow: %s"
                             .formatted(event.getCommand(), event.getProducer()));
+        }
+
+        if (isFailure(event)) {
+            return fail(event, producerStep, currentStageIndex);
         }
 
         EventStateResponse state = eventStateService.save(
@@ -147,6 +154,31 @@ public abstract class AbstractWorkflowUseCase implements EventOperation {
         return response;
     }
 
+    private CommonModelResponse fail(
+            CommonModel event,
+            StepType producerStep,
+            int currentStageIndex) {
+
+        log.warn(
+                "Failing workflow. command={}, transactionId={}, step={}, errorType={}",
+                event.getCommand(),
+                event.getTransactionId(),
+                producerStep,
+                failureType(event));
+
+        eventStateService.save(
+                event,
+                TransactionStatus.FAILED,
+                currentStageIndex,
+                Map.of(producerStep, StepStatus.ERROR),
+                event.getPayload());
+
+        CommonModelResponse response = commonModelMapper.toResponse(event);
+        publishCompleted(event, response);
+
+        return response;
+    }
+
     private void publishStage(
             CommonModel event,
             WorkflowStage stage) {
@@ -165,6 +197,25 @@ public abstract class AbstractWorkflowUseCase implements EventOperation {
                 .collect(Collectors.toMap(
                         step -> step,
                         step -> StepStatus.PROCESSING));
+    }
+
+    private boolean isFailure(CommonModel event) {
+        return isControlledFailure(event) || isDeadLetter(event);
+    }
+
+    private boolean isControlledFailure(CommonModel event) {
+        return event.getPayload() != null
+                && event.getPayload().has(ERROR_CODE)
+                && event.getPayload().has(ERROR_MESSAGE);
+    }
+
+    private boolean isDeadLetter(CommonModel event) {
+        return event.getPayload() != null
+                && event.getPayload().has(EXCEPTION);
+    }
+
+    private String failureType(CommonModel event) {
+        return isDeadLetter(event) ? "DEADLETTER" : "FAILURE_RESPONSE";
     }
 
     private StepType parseProducerStep(CommonModel event) {

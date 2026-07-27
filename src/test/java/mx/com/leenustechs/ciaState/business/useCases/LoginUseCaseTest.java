@@ -27,6 +27,8 @@ import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
 import mx.com.leenustechs.ciaState.models.types.StepType;
 import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
 class LoginUseCaseTest {
@@ -157,12 +159,82 @@ class LoginUseCaseTest {
                 response);
     }
 
+    @Test
+    void failsWorkflowWhenServiceReturnsControlledError() {
+        JsonNode payload = new ObjectMapper().createObjectNode()
+                .put("error_code", "INVALID_CREDENTIALS")
+                .put("error_message", "Invalid username or password");
+        CommonModel event = eventFrom(StepType.SECURITY.name(), payload);
+        CommonModelResponse response = new CommonModelResponse(
+                event.getTransactionId(),
+                event.getProducer(),
+                event.getCommand(),
+                event.getPayload());
+
+        when(commonModelMapper.toResponse(event)).thenReturn(response);
+
+        useCase.execute(event);
+
+        verify(eventStateService).save(
+                event,
+                TransactionStatus.FAILED,
+                0,
+                Map.of(StepType.SECURITY, StepStatus.ERROR),
+                payload);
+        verify(kafkaProducerAdapter).publish(
+                KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE,
+                event.getTransactionId(),
+                response);
+        verify(kafkaProducerAdapter, never()).publish(
+                eq(StepType.STUDENTS.getTopic()),
+                any(),
+                any());
+    }
+
+    @Test
+    void failsWorkflowWhenServiceReturnsDeadLetter() {
+        JsonNode payload = new ObjectMapper().createObjectNode()
+                .put("exception", "java.lang.NullPointerException");
+        CommonModel event = eventFrom(StepType.ASSETS.name(), payload);
+        CommonModelResponse response = new CommonModelResponse(
+                event.getTransactionId(),
+                event.getProducer(),
+                event.getCommand(),
+                event.getPayload());
+
+        when(commonModelMapper.toResponse(event)).thenReturn(response);
+
+        useCase.execute(event);
+
+        verify(eventStateService).save(
+                event,
+                TransactionStatus.FAILED,
+                1,
+                Map.of(StepType.ASSETS, StepStatus.ERROR),
+                payload);
+        verify(kafkaProducerAdapter).publish(
+                KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE,
+                event.getTransactionId(),
+                response);
+        verify(kafkaProducerAdapter, never()).publish(
+                eq(StepType.MODULES.getTopic()),
+                any(),
+                any());
+    }
+
     private CommonModel eventFrom(String producer) {
+        return eventFrom(producer, null);
+    }
+
+    private CommonModel eventFrom(
+            String producer,
+            JsonNode payload) {
+
         return new CommonModel(
                 "transaction-id",
                 producer,
                 OperationType.LOGIN,
-                null);
+                payload);
     }
 
     private EventStateResponse stateWith(

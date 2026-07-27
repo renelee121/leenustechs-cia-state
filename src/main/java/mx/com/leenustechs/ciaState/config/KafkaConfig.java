@@ -19,6 +19,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.util.backoff.FixedBackOff;
 
 import lombok.extern.slf4j.Slf4j;
 import mx.com.leenustechs.ciaState.business.utils.commons.CustomDeserializer;
@@ -93,10 +94,12 @@ public class KafkaConfig {
             Object event = record.value();
             return event == null || (event instanceof String && ((String) event).isEmpty());
         });
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler();
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
+                new FixedBackOff(0L, 0L));
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) -> {
             log.error("Error processing record from topic {}: {}", record.topic(), ex.getMessage(), ex);
         });
+        factory.setCommonErrorHandler(errorHandler);
         return factory;
     }
 }
