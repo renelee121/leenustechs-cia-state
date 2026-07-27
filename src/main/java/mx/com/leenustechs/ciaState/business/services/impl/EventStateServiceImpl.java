@@ -3,6 +3,7 @@ package mx.com.leenustechs.ciaState.business.services.impl;
 import java.time.Instant;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ public class EventStateServiceImpl implements EventStateService{
     private final EventStateRepository eventStateRepository;
     private final EventStateModelMapper eventStateModelMapper;
     private final EventStateInputMapper eventStateInputMapper;
+    @Value("${redis.ttl}")private final Long ttl;
 
     @Override
     public EventStateResponse findByTransactionId(String transactionId) {
@@ -74,7 +76,7 @@ public class EventStateServiceImpl implements EventStateService{
                     EventStateEntity created =
                             eventStateModelMapper.toEntity(model);
 
-                    created.setTtl(300L);
+                    created.setTtl(ttl);
 
                     return created;
                 });
