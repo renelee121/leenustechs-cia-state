@@ -28,7 +28,7 @@ public class EventStateServiceImpl implements EventStateService{
     private final EventStateRepository eventStateRepository;
     private final EventStateModelMapper eventStateModelMapper;
     private final EventStateInputMapper eventStateInputMapper;
-    @Value("${redis.ttl}")private final Long ttl;
+    @Value("${redis.ttl}") private Long ttl;
 
     @Override
     public EventStateResponse findByTransactionId(String transactionId) {
