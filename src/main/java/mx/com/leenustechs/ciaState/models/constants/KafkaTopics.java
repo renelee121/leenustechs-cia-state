@@ -10,4 +10,6 @@ public class KafkaTopics {
     public static final String LEENUSTECHS_CIA_ROLES = "leenustechs-cia-roles";
     public static final String LEENUSTECHS_CIA_MODULES = "leenustechs-cia-modules";
     public static final String LEENUSTECHS_CIA_FINAL_RESPONSE = "leenustechs-cia-response-final";
+    public static final String LEENUSTECHS_CIA_DEADLETTER = "leenustechs-cia-deadletter";
+    public static final String LEENUSTECHS_CIA_FAILURE_RESPONSE = "leenustechs-cia-failure-response";
 }

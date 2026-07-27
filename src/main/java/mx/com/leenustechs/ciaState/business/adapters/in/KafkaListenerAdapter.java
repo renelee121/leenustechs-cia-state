@@ -24,4 +24,14 @@ public class KafkaListenerAdapter {
     public void responseListener(CommonModel event){
         operationTypeService.execute(event);
     }
+
+    @KafkaListener(topics = KafkaTopics.LEENUSTECHS_CIA_DEADLETTER, containerFactory = "kafkaListenerContainerFactory")
+    public void deadLetterListener(CommonModel event){
+        operationTypeService.execute(event);
+    }
+
+    @KafkaListener(topics = KafkaTopics.LEENUSTECHS_CIA_FAILURE_RESPONSE, containerFactory = "kafkaListenerContainerFactory")
+    public void failureResponseListener(CommonModel event){
+        operationTypeService.execute(event);
+    }
 }
