@@ -53,7 +53,6 @@ public class KafkaConfig {
     
     public String getSaslJaasConfig() {
         String jaasConfig = String.format(SASL_JAAS_CONFIG, kafkaUsername, kafkaPassword);
-        log.info("SASL JAAS Config: {}", jaasConfig);
         return jaasConfig;
     }
 
