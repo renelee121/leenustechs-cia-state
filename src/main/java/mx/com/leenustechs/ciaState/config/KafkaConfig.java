@@ -32,7 +32,7 @@ public class KafkaConfig {
 
     private static final String SECURITY_PROTOCOL = "SASL_SSL";
     private static final String SASL_MECHANISM = "SCRAM-SHA-512";
-    public static final String SASL_JAAS_CONFIG = "org.apache.kafka.common.security.plain.PlainLoginModule required username=\"{0}\" password=\"{1}\";";
+    public static final String SASL_JAAS_CONFIG = "org.apache.kafka.common.security.plain.PlainLoginModule required username=\"%s\" password=\"%s\";";
 
     private final String kafkaUsername;
     private final String kafkaPassword;
