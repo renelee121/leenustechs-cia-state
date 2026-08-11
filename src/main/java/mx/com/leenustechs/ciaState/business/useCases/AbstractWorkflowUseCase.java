@@ -22,7 +22,7 @@ import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 @Slf4j
 public abstract class AbstractWorkflowUseCase implements EventOperation {
 
-    private static final String INITIAL_PRODUCER = "API";
+    private static final String INITIAL_PRODUCER = "CIA_API";
     private static final String ERROR_CODE = "error_code";
     private static final String ERROR_MESSAGE = "error_message";
     private static final String EXCEPTION = "exception";
