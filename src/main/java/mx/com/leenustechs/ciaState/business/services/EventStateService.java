@@ -1,8 +1,10 @@
 package mx.com.leenustechs.ciaState.business.services;
 
 import java.util.Map;
+import java.util.Optional;
 
 import mx.com.leenustechs.ciaState.models.CommonModel;
+import mx.com.leenustechs.ciaState.models.records.StageResultSnapshot;
 import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
@@ -20,6 +22,10 @@ public interface EventStateService {
             StepType step,
             StepStatus stepStatus,
             JsonNode result);
+    public Optional<StageResultSnapshot> completedStageSnapshot(
+            String transactionId,
+            Integer stageIndex,
+            Iterable<StepType> steps);
     public boolean claimStageCompletion(
             String transactionId,
             Integer stageIndex,

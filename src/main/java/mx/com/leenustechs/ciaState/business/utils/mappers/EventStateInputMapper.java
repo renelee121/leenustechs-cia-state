@@ -29,6 +29,7 @@ public interface EventStateInputMapper {
     @Mapping(target = "status", source = "status")
     @Mapping(target = "currentStage", source = "currentStage")
     @Mapping(target = "steps", source = "steps")
+    @Mapping(target = "stepResults", ignore = true)
     @Mapping(target = "completedStages", ignore = true)
     @Mapping(target = "result", source = "result")
     @Mapping(target = "createdAt", source = "createdAt")

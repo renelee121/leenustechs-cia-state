@@ -79,6 +79,7 @@ class MappersTest {
         JsonNode originalPayload = objectMapper.createObjectNode().put("old", 1);
         target.setPayload(originalPayload);
         target.setSteps(new EnumMap<>(Map.of(StepType.SECURITY, StepStatus.COMPLETE)));
+        target.setStepResults(Map.of("0:SECURITY", "{\"ok\":true}"));
         target.setCreatedAt(Instant.EPOCH);
         target.setTtl(99L);
 
@@ -93,6 +94,7 @@ class MappersTest {
         assertEquals(1, target.getPayload().get("old").asInt());
         assertEquals(2, target.getPayload().get("new").asInt());
         assertEquals(2, target.getSteps().size());
+        assertEquals("{\"ok\":true}", target.getStepResults().get("0:SECURITY"));
         assertEquals(Instant.EPOCH, target.getCreatedAt());
         assertEquals(99L, target.getTtl());
     }

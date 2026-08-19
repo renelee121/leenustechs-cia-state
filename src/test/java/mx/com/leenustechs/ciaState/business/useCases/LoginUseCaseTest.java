@@ -1,5 +1,7 @@
 package mx.com.leenustechs.ciaState.business.useCases;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -8,11 +10,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -21,6 +26,7 @@ import mx.com.leenustechs.ciaState.business.services.EventStateService;
 import mx.com.leenustechs.ciaState.business.utils.mappers.CommonModelMapper;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.constants.KafkaTopics;
+import mx.com.leenustechs.ciaState.models.records.StageResultSnapshot;
 import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.responses.CommonModelResponse;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
@@ -30,6 +36,8 @@ import mx.com.leenustechs.ciaState.models.types.StepType;
 import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 
 @ExtendWith(MockitoExtension.class)
 class LoginUseCaseTest {
@@ -55,7 +63,7 @@ class LoginUseCaseTest {
 
     @Test
     void startsWorkflowAndPublishesFirstStage() {
-        CommonModel event = eventFrom("API");
+        CommonModel event = eventFrom("CIA_API");
 
         useCase.execute(event);
 
@@ -72,7 +80,7 @@ class LoginUseCaseTest {
     }
 
     @Test
-    void waitsUntilEveryParallelStepIsComplete() {
+    void waitsUntilEveryParallelStepAndResultIsComplete() {
         CommonModel event = eventFrom(StepType.STUDENTS.name());
         EventStateResponse state = stateWith(Map.of(
                 StepType.STUDENTS, StepStatus.COMPLETE,
@@ -89,16 +97,18 @@ class LoginUseCaseTest {
                 eq(null)))
                 .thenReturn(new StepTransitionResult(state, true));
 
-        useCase.execute(event);
-
-        verify(eventStateService).claimStageCompletion(
+        when(eventStateService.completedStageSnapshot(
                 event.getTransactionId(),
                 1,
-                java.util.List.of(
-                        StepType.STUDENTS,
-                        StepType.ASSETS,
-                        StepType.PREFERENCES,
-                        StepType.ROLES));
+                parallelSteps()))
+                .thenReturn(Optional.empty());
+
+        useCase.execute(event);
+
+        verify(eventStateService, never()).claimStageCompletion(
+                any(),
+                any(),
+                any());
         verify(kafkaProducerAdapter, never())
                 .publish(any(), any(), any());
     }
@@ -117,10 +127,22 @@ class LoginUseCaseTest {
                 eq(StepStatus.COMPLETE),
                 eq(null)))
                 .thenReturn(new StepTransitionResult(state, true));
+
+        when(eventStateService.completedStageSnapshot(
+                event.getTransactionId(),
+                0,
+                List.of(StepType.SECURITY)))
+                .thenReturn(Optional.of(
+                        new StageResultSnapshot(
+                                null,
+                                Map.of(
+                                        StepType.SECURITY,
+                                        JsonNodeFactory.instance.nullNode()))));
+
         when(eventStateService.claimStageCompletion(
                 event.getTransactionId(),
                 0,
-                java.util.List.of(StepType.SECURITY)))
+                List.of(StepType.SECURITY)))
                 .thenReturn(true);
 
         useCase.execute(event);
@@ -142,8 +164,151 @@ class LoginUseCaseTest {
     }
 
     @Test
-    void completesWorkflowWithoutHardcodingLastStep() {
-        CommonModel event = eventFrom(StepType.MODULES.name());
+    void aggregatesEveryParallelResultBeforePublishingModules() {
+        ObjectMapper mapper = new ObjectMapper();
+
+        ObjectNode input = mapper.createObjectNode()
+                .put("userId", 42)
+                .put("security", "ok");
+
+        ObjectNode students = input.deepCopy();
+        students.put("students", 1);
+
+        ObjectNode assets = input.deepCopy();
+        assets.put("assets", 1);
+
+        ObjectNode preferences = input.deepCopy();
+        preferences.put("preferences", 1);
+
+        ObjectNode roles = input.deepCopy();
+        roles.put("roles", 1);
+
+        CommonModel event = eventFrom(StepType.ROLES.name(), roles);
+
+        when(eventStateService.transitionStep(
+                event,
+                TransactionStatus.PROCESSING,
+                1,
+                StepType.ROLES,
+                StepStatus.COMPLETE,
+                null))
+                .thenReturn(new StepTransitionResult(
+                        stateWith(Map.of(
+                                StepType.STUDENTS, StepStatus.COMPLETE,
+                                StepType.ASSETS, StepStatus.COMPLETE,
+                                StepType.PREFERENCES, StepStatus.COMPLETE,
+                                StepType.ROLES, StepStatus.COMPLETE)),
+                        true));
+
+        when(eventStateService.completedStageSnapshot(
+                event.getTransactionId(),
+                1,
+                parallelSteps()))
+                .thenReturn(Optional.of(
+                        new StageResultSnapshot(
+                                input,
+                                Map.of(
+                                        StepType.STUDENTS, students,
+                                        StepType.ASSETS, assets,
+                                        StepType.PREFERENCES, preferences,
+                                        StepType.ROLES, roles))));
+
+        when(eventStateService.claimStageCompletion(
+                event.getTransactionId(),
+                1,
+                parallelSteps()))
+                .thenReturn(true);
+
+        useCase.execute(event);
+
+        ArgumentCaptor<Object> publishedCaptor =
+                ArgumentCaptor.forClass(Object.class);
+
+        verify(kafkaProducerAdapter).publish(
+                eq(StepType.MODULES.getTopic()),
+                eq(event.getTransactionId()),
+                publishedCaptor.capture());
+
+        CommonModel published = (CommonModel) publishedCaptor.getValue();
+
+        assertTrue(published.getPayload().has("userId"));
+        assertTrue(published.getPayload().has("security"));
+        assertTrue(published.getPayload().has("students"));
+        assertTrue(published.getPayload().has("assets"));
+        assertTrue(published.getPayload().has("preferences"));
+        assertTrue(published.getPayload().has("roles"));
+
+        verify(eventStateService).save(
+                eq(published),
+                eq(TransactionStatus.PROCESSING),
+                eq(2),
+                eq(Map.of(StepType.MODULES, StepStatus.PROCESSING)),
+                eq(null));
+    }
+
+    @Test
+    void parallelAggregationRejectsConflictingBranchWrites() {
+        ObjectMapper mapper = new ObjectMapper();
+
+        ObjectNode input = mapper.createObjectNode()
+                .put("shared", "base");
+
+        ObjectNode students = input.deepCopy();
+        students.put("shared", "students");
+
+        ObjectNode assets = input.deepCopy();
+        assets.put("shared", "assets");
+
+        ObjectNode preferences = input.deepCopy();
+        ObjectNode roles = input.deepCopy();
+
+        CommonModel event = eventFrom(StepType.ROLES.name(), roles);
+
+        when(eventStateService.transitionStep(
+                event,
+                TransactionStatus.PROCESSING,
+                1,
+                StepType.ROLES,
+                StepStatus.COMPLETE,
+                null))
+                .thenReturn(new StepTransitionResult(
+                        new EventStateResponse(),
+                        true));
+
+        when(eventStateService.completedStageSnapshot(
+                event.getTransactionId(),
+                1,
+                parallelSteps()))
+                .thenReturn(Optional.of(
+                        new StageResultSnapshot(
+                                input,
+                                Map.of(
+                                        StepType.STUDENTS, students,
+                                        StepType.ASSETS, assets,
+                                        StepType.PREFERENCES, preferences,
+                                        StepType.ROLES, roles))));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> useCase.execute(event));
+
+        verify(eventStateService, never()).claimStageCompletion(
+                any(), any(), any());
+        verify(kafkaProducerAdapter, never()).publish(
+                eq(StepType.MODULES.getTopic()),
+                any(),
+                any());
+    }
+
+    @Test
+    void completesWorkflowWithAggregatedLastStageResult() {
+        ObjectMapper mapper = new ObjectMapper();
+
+        ObjectNode input = mapper.createObjectNode().put("roles", 1);
+        ObjectNode modules = input.deepCopy();
+        modules.put("modules", 1);
+
+        CommonModel event = eventFrom(StepType.MODULES.name(), modules);
         CommonModelResponse response = new CommonModelResponse(
                 event.getTransactionId(),
                 event.getProducer(),
@@ -160,11 +325,22 @@ class LoginUseCaseTest {
                 eq(StepStatus.COMPLETE),
                 eq(null)))
                 .thenReturn(new StepTransitionResult(state, true));
+
+        when(eventStateService.completedStageSnapshot(
+                event.getTransactionId(),
+                2,
+                List.of(StepType.MODULES)))
+                .thenReturn(Optional.of(
+                        new StageResultSnapshot(
+                                input,
+                                Map.of(StepType.MODULES, modules))));
+
         when(eventStateService.claimStageCompletion(
                 event.getTransactionId(),
                 2,
-                java.util.List.of(StepType.MODULES)))
+                List.of(StepType.MODULES)))
                 .thenReturn(true);
+
         when(commonModelMapper.toResponse(event)).thenReturn(response);
 
         useCase.execute(event);
@@ -283,12 +459,20 @@ class LoginUseCaseTest {
 
         useCase.execute(event);
 
+        verify(eventStateService, never()).completedStageSnapshot(
+                any(), any(), any());
         verify(eventStateService, never()).claimStageCompletion(
-                any(),
-                any(),
-                any());
+                any(), any(), any());
         verify(kafkaProducerAdapter, never())
                 .publish(any(), any(), any());
+    }
+
+    private List<StepType> parallelSteps() {
+        return List.of(
+                StepType.STUDENTS,
+                StepType.ASSETS,
+                StepType.PREFERENCES,
+                StepType.ROLES);
     }
 
     private CommonModel eventFrom(String producer) {

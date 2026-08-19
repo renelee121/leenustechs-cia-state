@@ -19,6 +19,7 @@ public class EventStateModel{
     private Integer currentStage;
     private Map<StepType, StepStatus> steps;
     private Map<Integer, StepStatus> completedStages;
+    private Map<String, String> stepResults;
     private JsonNode payload;
     private JsonNode result;
     private Instant createdAt;

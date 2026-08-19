@@ -28,6 +28,7 @@ import mx.com.leenustechs.ciaState.business.utils.mappers.EventStateModelMapper;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.EventStateModel;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
+import mx.com.leenustechs.ciaState.models.records.StageResultSnapshot;
 import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
@@ -45,13 +46,19 @@ class EventStateServiceImplTest {
     private final EventStateInputMapper inputMapper = mock(EventStateInputMapper.class);
     private final RedisTemplate<String, Object> redisTemplate = mock(RedisTemplate.class);
     private final RedisKeyValueTemplate keyValueTemplate = mock(RedisKeyValueTemplate.class);
-    private final JsonNode payload = new ObjectMapper().createObjectNode().put("value", 1);
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JsonNode payload = objectMapper.createObjectNode().put("value", 1);
     private EventStateServiceImpl service;
 
     @BeforeEach
     void setUp() {
         service = new EventStateServiceImpl(
-                repository, modelMapper, inputMapper, redisTemplate, keyValueTemplate);
+                repository,
+                modelMapper,
+                inputMapper,
+                redisTemplate,
+                keyValueTemplate,
+                objectMapper);
         ReflectionTestUtils.setField(service, "ttl", 300L);
     }
 
@@ -133,7 +140,7 @@ class EventStateServiceImplTest {
 
         StepTransitionResult result = service.transitionStep(
                 event(payload), TransactionStatus.PROCESSING, 0,
-                StepType.SECURITY, StepStatus.COMPLETE, payload);
+                StepType.SECURITY, StepStatus.COMPLETE, null);
 
         assertFalse(result.applied());
         assertSame(response, result.state());
@@ -141,7 +148,7 @@ class EventStateServiceImplTest {
     }
 
     @Test
-    void appliesTransitionAndPersistsPartialUpdate() {
+    void appliesTransitionAndPersistsOnlyAuxiliaryPartialUpdate() {
         EventStateResponse response = new EventStateResponse();
         EventStateEntity entity = new EventStateEntity();
         EventStateModel model = new EventStateModel();
@@ -153,7 +160,7 @@ class EventStateServiceImplTest {
 
         StepTransitionResult result = service.transitionStep(
                 event(payload), TransactionStatus.PROCESSING, 0,
-                StepType.SECURITY, StepStatus.COMPLETE, payload);
+                StepType.SECURITY, StepStatus.COMPLETE, null);
 
         assertTrue(result.applied());
         assertSame(response, result.state());
@@ -161,9 +168,96 @@ class EventStateServiceImplTest {
     }
 
     @Test
+    void rejectsInconsistentTransitionContractBeforeTouchingRedis() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> service.transitionStep(
+                        event(payload),
+                        TransactionStatus.COMPLETED,
+                        0,
+                        StepType.SECURITY,
+                        StepStatus.COMPLETE,
+                        null));
+
+        verify(redisTemplate, never()).execute(
+                any(), any(), any(), any(), any(Object[].class));
+    }
+
+    @Test
+    void returnsCompletedStageSnapshotWithEveryPersistedResult() {
+        JsonNode input = objectMapper.createObjectNode().put("userId", 42);
+        JsonNode students = objectMapper.createObjectNode().put("students", 1);
+        JsonNode assets = objectMapper.createObjectNode().put("assets", 1);
+
+        EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
+        entity.setStatus(TransactionStatus.PROCESSING);
+        entity.setCurrentStage(1);
+        entity.setPayload(input);
+        entity.setSteps(Map.of(
+                StepType.STUDENTS, StepStatus.COMPLETE,
+                StepType.ASSETS, StepStatus.COMPLETE));
+        entity.setStepResults(Map.of(
+                "1:STUDENTS", students.toString(),
+                "1:ASSETS", assets.toString()));
+
+        when(repository.findById("tx")).thenReturn(Optional.of(entity));
+
+        StageResultSnapshot snapshot = service.completedStageSnapshot(
+                "tx",
+                1,
+                List.of(StepType.STUDENTS, StepType.ASSETS))
+                .orElseThrow();
+
+        assertEquals(input, snapshot.inputPayload());
+        assertEquals(students, snapshot.stepResults().get(StepType.STUDENTS));
+        assertEquals(assets, snapshot.stepResults().get(StepType.ASSETS));
+    }
+
+    @Test
+    void doesNotExposeSnapshotUntilEveryStepIsComplete() {
+        EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
+        entity.setStatus(TransactionStatus.PROCESSING);
+        entity.setCurrentStage(1);
+        entity.setSteps(Map.of(
+                StepType.STUDENTS, StepStatus.COMPLETE,
+                StepType.ASSETS, StepStatus.PROCESSING));
+
+        when(repository.findById("tx")).thenReturn(Optional.of(entity));
+
+        assertTrue(service.completedStageSnapshot(
+                "tx",
+                1,
+                List.of(StepType.STUDENTS, StepType.ASSETS))
+                .isEmpty());
+    }
+
+    @Test
+    void rejectsImpossibleCompleteWithoutPersistedResult() {
+        EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
+        entity.setStatus(TransactionStatus.PROCESSING);
+        entity.setCurrentStage(1);
+        entity.setSteps(Map.of(StepType.ASSETS, StepStatus.COMPLETE));
+        entity.setStepResults(Map.of());
+
+        when(repository.findById("tx")).thenReturn(Optional.of(entity));
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> service.completedStageSnapshot(
+                        "tx",
+                        1,
+                        List.of(StepType.ASSETS)));
+
+        assertTrue(exception.getMessage().contains("result is missing"));
+    }
+
+    @Test
     void claimsStageOnlyWhenRedisReturnsOne() {
         when(redisTemplate.execute(any(), any(), any(), any(), any(Object[].class)))
-                .thenReturn(1L, 0L, null);
+                .thenReturn(1L, 0L);
 
         assertTrue(service.claimStageCompletion(
                 "tx", 1, List.of(StepType.ASSETS, StepType.ROLES)));
