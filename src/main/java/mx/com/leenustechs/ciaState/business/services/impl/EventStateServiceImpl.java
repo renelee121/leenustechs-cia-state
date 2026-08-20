@@ -3,17 +3,12 @@ package mx.com.leenustechs.ciaState.business.services.impl;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.PartialUpdate;
-import org.springframework.data.redis.core.RedisKeyValueTemplate;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.script.RedisScript;
-import org.springframework.data.redis.serializer.GenericToStringSerializer;
-import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.stereotype.Service;
 
 import lombok.RequiredArgsConstructor;
@@ -25,6 +20,7 @@ import mx.com.leenustechs.ciaState.business.utils.mappers.EventStateModelMapper;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.EventStateModel;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
+import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
 import mx.com.leenustechs.ciaState.models.records.StageResultSnapshot;
 import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
@@ -38,118 +34,12 @@ import tools.jackson.databind.ObjectMapper;
 @RequiredArgsConstructor
 public class EventStateServiceImpl implements EventStateService {
 
-    private static final String KEY_PREFIX = "eventState:";
-    private static final String STEP_FIELD_TEMPLATE = "steps.[%s]";
-    private static final String STEP_RESULT_FIELD_TEMPLATE = "stepResults.[%s]";
-    private static final String STAGE_FIELD_TEMPLATE = "completedStages.[%d]";
     private static final String STEP_RESULT_KEY_TEMPLATE = "%d:%s";
-
-    /**
-     * Owns the atomic terminal transition of one worker step.
-     *
-     * <p>The result and the terminal step status are written in the same Lua
-     * execution. Therefore a visible COMPLETE/ERROR step always has its
-     * persisted result. The script also rejects responses for an old stage or
-     * for an already terminal workflow.</p>
-     */
-    private static final RedisScript<Long> TRANSITION_STEP_SCRIPT =
-            RedisScript.of("""
-                    local transactionStatus =
-                            redis.call('HGET', KEYS[1], 'status')
-
-                    if transactionStatus == ARGV[1]
-                            or transactionStatus == ARGV[2] then
-                        return 0
-                    end
-
-                    local storedStage =
-                            redis.call('HGET', KEYS[1], 'currentStage')
-
-                    if storedStage ~= ARGV[3] then
-                        return 0
-                    end
-
-                    local currentStep =
-                            redis.call('HGET', KEYS[1], ARGV[4])
-
-                    if currentStep ~= ARGV[5] then
-                        return 0
-                    end
-
-                    redis.call(
-                            'HSET',
-                            KEYS[1],
-                            ARGV[6],
-                            ARGV[7])
-
-                    redis.call(
-                            'HSET',
-                            KEYS[1],
-                            ARGV[4],
-                            ARGV[8])
-
-                    if ARGV[8] == ARGV[9] then
-                        redis.call(
-                                'HSET',
-                                KEYS[1],
-                                'status',
-                                ARGV[1])
-                    end
-
-                    redis.call(
-                            'EXPIRE',
-                            KEYS[1],
-                            tonumber(ARGV[10]))
-
-                    return 1
-                    """, Long.class);
-
-    /**
-     * Atomically elects exactly one owner for advancing a completed stage.
-     * The claim is valid only while the workflow is PROCESSING and still on
-     * the expected stage.
-     */
-    private static final RedisScript<Long> CLAIM_STAGE_SCRIPT =
-            RedisScript.of("""
-                    local transactionStatus =
-                            redis.call('HGET', KEYS[1], 'status')
-
-                    if transactionStatus ~= ARGV[1] then
-                        return 0
-                    end
-
-                    local storedStage =
-                            redis.call('HGET', KEYS[1], 'currentStage')
-
-                    if storedStage ~= ARGV[2] then
-                        return 0
-                    end
-
-                    for index = 5, #ARGV do
-                        if redis.call(
-                                'HGET',
-                                KEYS[1],
-                                ARGV[index]) ~= ARGV[3] then
-                            return 0
-                        end
-                    end
-
-                    return redis.call(
-                            'HSETNX',
-                            KEYS[1],
-                            ARGV[4],
-                            ARGV[3])
-                    """, Long.class);
 
     private final EventStateRepository eventStateRepository;
     private final EventStateModelMapper eventStateModelMapper;
     private final EventStateInputMapper eventStateInputMapper;
-    private final RedisTemplate<String, Object> redisTemplate;
-    private final RedisKeyValueTemplate redisKeyValueTemplate;
     private final ObjectMapper objectMapper;
-
-    @Value("${redis.ttl}")
-    private Long ttl;
 
     @Override
     public EventStateResponse findByTransactionId(String transactionId) {
@@ -158,8 +48,7 @@ public class EventStateServiceImpl implements EventStateService {
                 .orElseThrow(() ->
                         new TransactionNotFoundException(transactionId));
 
-        EventStateModel model = eventStateModelMapper.toModel(entity);
-        return eventStateModelMapper.toResponse(model);
+        return toResponse(entity);
     }
 
     @Override
@@ -181,23 +70,21 @@ public class EventStateServiceImpl implements EventStateService {
                 now,
                 now);
 
-        EventStateEntity entity = eventStateRepository
-                .findById(model.getTransactionId())
-                .map(existing -> {
-                    eventStateModelMapper.updateFromModel(model, existing);
-                    return existing;
-                })
-                .orElseGet(() -> {
-                    EventStateEntity created =
-                            eventStateModelMapper.toEntity(model);
-                    created.setTtl(ttl);
-                    return created;
-                });
+        AtomicStateUpdate update = eventStateRepository.updateAtomically(
+                model.getTransactionId(),
+                current -> Optional.of(
+                        current.map(existing -> {
+                            eventStateModelMapper.updateFromModel(model, existing);
+                            return existing;
+                        }).orElseGet(() ->
+                                eventStateModelMapper.toEntity(model))));
 
-        EventStateEntity saved = eventStateRepository.save(entity);
+        EventStateEntity saved = update.state()
+                .orElseThrow(() -> new IllegalStateException(
+                        "Firebase RTDB save completed without workflow state. "
+                                + "transactionId=" + model.getTransactionId()));
 
-        return eventStateModelMapper.toResponse(
-                eventStateModelMapper.toModel(saved));
+        return toResponse(saved);
     }
 
     @Override
@@ -211,60 +98,63 @@ public class EventStateServiceImpl implements EventStateService {
 
         validateTransition(status, stepStatus);
 
-        String key = KEY_PREFIX + event.getTransactionId();
-        String stepField = STEP_FIELD_TEMPLATE.formatted(step.name());
+        String transactionId = event.getTransactionId();
         String resultKey = stepResultKey(currentStage, step);
-        String stepResultField =
-                STEP_RESULT_FIELD_TEMPLATE.formatted(resultKey);
+        String serializedStepResult = event.getPayload() == null
+                ? "null"
+                : event.getPayload().toString();
+        Instant now = Instant.now();
 
-        String serializedStepResult =
-                event.getPayload() == null
-                        ? "null"
-                        : event.getPayload().toString();
+        AtomicStateUpdate update = eventStateRepository.updateAtomically(
+                transactionId,
+                current -> current.flatMap(entity -> {
+                    if (TransactionStatus.FAILED.equals(entity.getStatus())
+                            || TransactionStatus.COMPLETED.equals(entity.getStatus())) {
+                        return Optional.empty();
+                    }
 
-        Long applied = redisTemplate.execute(
-                TRANSITION_STEP_SCRIPT,
-                new StringRedisSerializer(),
-                new GenericToStringSerializer<>(Long.class),
-                List.of(key),
-                TransactionStatus.FAILED.name(),
-                TransactionStatus.COMPLETED.name(),
-                String.valueOf(currentStage),
-                stepField,
-                StepStatus.PROCESSING.name(),
-                stepResultField,
-                serializedStepResult,
-                stepStatus.name(),
-                StepStatus.ERROR.name(),
-                String.valueOf(ttl));
+                    if (!currentStage.equals(entity.getCurrentStage())) {
+                        return Optional.empty();
+                    }
 
-        if (!Long.valueOf(1L).equals(applied)) {
-            return new StepTransitionResult(
-                    findByTransactionId(event.getTransactionId()),
-                    false);
-        }
+                    if (entity.getSteps() == null
+                            || !StepStatus.PROCESSING.equals(
+                                    entity.getSteps().get(step))) {
+                        return Optional.empty();
+                    }
 
-        /*
-         * Important: this partial update intentionally does NOT touch payload,
-         * producer, command, currentStage, or PROCESSING status. Those are
-         * workflow/stage-owned fields. A worker owns only its terminal status
-         * and its own stepResults slot (written atomically by Lua above).
-         */
-        PartialUpdate<EventStateEntity> update =
-                new PartialUpdate<>(
-                        event.getTransactionId(),
-                        EventStateEntity.class)
-                        .set("updatedAt", Instant.now());
+                    Map<StepType, StepStatus> updatedSteps =
+                            new EnumMap<>(StepType.class);
+                    updatedSteps.putAll(entity.getSteps());
+                    updatedSteps.put(step, stepStatus);
+                    entity.setSteps(updatedSteps);
 
-        if (StepStatus.ERROR.equals(stepStatus) && result != null) {
-            update.set("result", result);
-        }
+                    Map<String, String> updatedResults =
+                            entity.getStepResults() == null
+                                    ? new LinkedHashMap<>()
+                                    : new LinkedHashMap<>(entity.getStepResults());
+                    updatedResults.put(resultKey, serializedStepResult);
+                    entity.setStepResults(updatedResults);
 
-        redisKeyValueTemplate.update(update);
+                    if (StepStatus.ERROR.equals(stepStatus)) {
+                        entity.setStatus(TransactionStatus.FAILED);
+                    }
+
+                    if (StepStatus.ERROR.equals(stepStatus) && result != null) {
+                        entity.setResult(result.deepCopy());
+                    }
+
+                    entity.setUpdatedAt(now);
+                    return Optional.of(entity);
+                }));
+
+        EventStateEntity state = update.state()
+                .orElseThrow(() ->
+                        new TransactionNotFoundException(transactionId));
 
         return new StepTransitionResult(
-                findByTransactionId(event.getTransactionId()),
-                true);
+                toResponse(state),
+                update.applied());
     }
 
     @Override
@@ -334,10 +224,9 @@ public class EventStateServiceImpl implements EventStateService {
                             serializedResult));
         }
 
-        JsonNode inputPayload =
-                entity.getPayload() == null
-                        ? null
-                        : entity.getPayload().deepCopy();
+        JsonNode inputPayload = entity.getPayload() == null
+                ? null
+                : entity.getPayload().deepCopy();
 
         return Optional.of(
                 new StageResultSnapshot(
@@ -351,31 +240,52 @@ public class EventStateServiceImpl implements EventStateService {
             Integer stageIndex,
             Iterable<StepType> steps) {
 
-        List<Object> arguments = new ArrayList<>();
-        arguments.add(TransactionStatus.PROCESSING.name());
-        arguments.add(String.valueOf(stageIndex));
-        arguments.add(StepStatus.COMPLETE.name());
-        arguments.add(STAGE_FIELD_TEMPLATE.formatted(stageIndex));
+        List<StepType> requestedSteps = new ArrayList<>();
+        steps.forEach(requestedSteps::add);
 
-        boolean hasSteps = false;
-
-        for (StepType step : steps) {
-            hasSteps = true;
-            arguments.add(STEP_FIELD_TEMPLATE.formatted(step.name()));
-        }
-
-        if (!hasSteps) {
+        if (requestedSteps.isEmpty()) {
             return false;
         }
 
-        Long claimed = redisTemplate.execute(
-                CLAIM_STAGE_SCRIPT,
-                new StringRedisSerializer(),
-                new GenericToStringSerializer<>(Long.class),
-                List.of(KEY_PREFIX + transactionId),
-                arguments.toArray());
+        Instant now = Instant.now();
 
-        return Long.valueOf(1L).equals(claimed);
+        AtomicStateUpdate update = eventStateRepository.updateAtomically(
+                transactionId,
+                current -> current.flatMap(entity -> {
+                    if (!TransactionStatus.PROCESSING.equals(entity.getStatus())
+                            || !stageIndex.equals(entity.getCurrentStage())) {
+                        return Optional.empty();
+                    }
+
+                    for (StepType step : requestedSteps) {
+                        if (entity.getSteps() == null
+                                || !StepStatus.COMPLETE.equals(
+                                        entity.getSteps().get(step))) {
+                            return Optional.empty();
+                        }
+                    }
+
+                    Map<Integer, StepStatus> completedStages =
+                            entity.getCompletedStages() == null
+                                    ? new HashMap<>()
+                                    : new HashMap<>(entity.getCompletedStages());
+
+                    if (completedStages.containsKey(stageIndex)) {
+                        return Optional.empty();
+                    }
+
+                    completedStages.put(stageIndex, StepStatus.COMPLETE);
+                    entity.setCompletedStages(completedStages);
+                    entity.setUpdatedAt(now);
+                    return Optional.of(entity);
+                }));
+
+        return update.applied();
+    }
+
+    private EventStateResponse toResponse(EventStateEntity entity) {
+        EventStateModel model = eventStateModelMapper.toModel(entity);
+        return eventStateModelMapper.toResponse(model);
     }
 
     private String stepResultKey(

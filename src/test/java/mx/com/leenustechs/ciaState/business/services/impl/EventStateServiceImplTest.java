@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -14,12 +15,10 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.redis.core.RedisKeyValueTemplate;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import mx.com.leenustechs.ciaState.business.repositories.EventStateRepository;
 import mx.com.leenustechs.ciaState.business.utils.exceptions.TransactionNotFoundException;
@@ -28,6 +27,7 @@ import mx.com.leenustechs.ciaState.business.utils.mappers.EventStateModelMapper;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.EventStateModel;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
+import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
 import mx.com.leenustechs.ciaState.models.records.StageResultSnapshot;
 import mx.com.leenustechs.ciaState.models.records.StepTransitionResult;
 import mx.com.leenustechs.ciaState.models.responses.EventStateResponse;
@@ -38,14 +38,12 @@ import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-@SuppressWarnings({ "unchecked", "rawtypes" })
+@SuppressWarnings({"unchecked", "rawtypes"})
 class EventStateServiceImplTest {
 
     private final EventStateRepository repository = mock(EventStateRepository.class);
     private final EventStateModelMapper modelMapper = mock(EventStateModelMapper.class);
     private final EventStateInputMapper inputMapper = mock(EventStateInputMapper.class);
-    private final RedisTemplate<String, Object> redisTemplate = mock(RedisTemplate.class);
-    private final RedisKeyValueTemplate keyValueTemplate = mock(RedisKeyValueTemplate.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final JsonNode payload = objectMapper.createObjectNode().put("value", 1);
     private EventStateServiceImpl service;
@@ -56,10 +54,7 @@ class EventStateServiceImplTest {
                 repository,
                 modelMapper,
                 inputMapper,
-                redisTemplate,
-                keyValueTemplate,
                 objectMapper);
-        ReflectionTestUtils.setField(service, "ttl", 300L);
     }
 
     @Test
@@ -86,89 +81,123 @@ class EventStateServiceImplTest {
     }
 
     @Test
-    void createsNewStateWithTtl() {
+    void createsNewDurableStateWithoutTtl() {
         CommonModel event = event(null);
         EventStateModel model = new EventStateModel();
         model.setTransactionId("tx");
         EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
         EventStateResponse response = new EventStateResponse();
+
         when(inputMapper.toEventStateModel(
-                any(), any(), any(), any(), any(), any(), any())).thenReturn(model);
-        when(repository.findById("tx")).thenReturn(Optional.empty());
+                any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(model);
         when(modelMapper.toEntity(model)).thenReturn(entity);
-        when(repository.save(entity)).thenReturn(entity);
         when(modelMapper.toModel(entity)).thenReturn(model);
         when(modelMapper.toResponse(model)).thenReturn(response);
+        mockAtomicUpdate(Optional.empty(), true);
 
         assertSame(response, service.save(
-                event, TransactionStatus.PROCESSING, 0,
-                Map.of(StepType.SECURITY, StepStatus.PROCESSING), null));
-        assertEquals(300L, entity.getTtl());
+                event,
+                TransactionStatus.PROCESSING,
+                0,
+                Map.of(StepType.SECURITY, StepStatus.PROCESSING),
+                null));
+
+        verify(modelMapper).toEntity(model);
     }
 
     @Test
-    void updatesExistingStateBeforeSaving() {
+    void updatesExistingStateInsideAtomicStoreMutation() {
         CommonModel event = event(payload);
         EventStateModel model = new EventStateModel();
         model.setTransactionId("tx");
         EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
         EventStateResponse response = new EventStateResponse();
+
         when(inputMapper.toEventStateModel(
-                any(), any(), any(), any(), any(), any(), any())).thenReturn(model);
-        when(repository.findById("tx")).thenReturn(Optional.of(entity));
-        when(repository.save(entity)).thenReturn(entity);
+                any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(model);
         when(modelMapper.toModel(entity)).thenReturn(model);
         when(modelMapper.toResponse(model)).thenReturn(response);
+        mockAtomicUpdate(Optional.of(entity), true);
 
         assertSame(response, service.save(
-                event, TransactionStatus.PROCESSING, 1,
-                Map.of(StepType.ASSETS, StepStatus.PROCESSING), payload));
+                event,
+                TransactionStatus.PROCESSING,
+                1,
+                Map.of(StepType.ASSETS, StepStatus.PROCESSING),
+                payload));
+
         verify(modelMapper).updateFromModel(model, entity);
         verify(modelMapper, never()).toEntity(model);
     }
 
     @Test
-    void returnsExistingStateWhenTransitionWasAlreadyTerminal() {
-        EventStateResponse response = new EventStateResponse();
-        EventStateEntity entity = new EventStateEntity();
-        EventStateModel model = new EventStateModel();
-        when(redisTemplate.execute(any(), any(), any(), any(), any(Object[].class)))
-                .thenReturn(0L);
-        when(repository.findById("tx")).thenReturn(Optional.of(entity));
-        when(modelMapper.toModel(entity)).thenReturn(model);
-        when(modelMapper.toResponse(model)).thenReturn(response);
+    void appliesCompleteTransitionAndPersistsWorkerResultAtomically() throws Exception {
+        EventStateEntity entity = processingEntity(0, StepType.SECURITY);
+        EventStateResponse response = mappedResponse(entity);
+        mockAtomicUpdate(Optional.of(entity), true);
 
-        StepTransitionResult result = service.transitionStep(
-                event(payload), TransactionStatus.PROCESSING, 0,
-                StepType.SECURITY, StepStatus.COMPLETE, null);
+        StepTransitionResult transition = service.transitionStep(
+                event(payload),
+                TransactionStatus.PROCESSING,
+                0,
+                StepType.SECURITY,
+                StepStatus.COMPLETE,
+                null);
 
-        assertFalse(result.applied());
-        assertSame(response, result.state());
-        verify(keyValueTemplate, never()).update(any());
+        assertTrue(transition.applied());
+        assertSame(response, transition.state());
+        assertEquals(StepStatus.COMPLETE, entity.getSteps().get(StepType.SECURITY));
+        assertEquals(payload, objectMapper.readTree(entity.getStepResults().get("0:SECURITY")));
     }
 
     @Test
-    void appliesTransitionAndPersistsOnlyAuxiliaryPartialUpdate() {
-        EventStateResponse response = new EventStateResponse();
-        EventStateEntity entity = new EventStateEntity();
-        EventStateModel model = new EventStateModel();
-        when(redisTemplate.execute(any(), any(), any(), any(), any(Object[].class)))
-                .thenReturn(1L);
-        when(repository.findById("tx")).thenReturn(Optional.of(entity));
-        when(modelMapper.toModel(entity)).thenReturn(model);
-        when(modelMapper.toResponse(model)).thenReturn(response);
+    void terminalWorkflowRejectsLateWorkerWithoutRegressingState() {
+        EventStateEntity entity = processingEntity(0, StepType.SECURITY);
+        entity.setStatus(TransactionStatus.FAILED);
+        EventStateResponse response = mappedResponse(entity);
+        mockAtomicUpdate(Optional.of(entity), false);
 
-        StepTransitionResult result = service.transitionStep(
-                event(payload), TransactionStatus.PROCESSING, 0,
-                StepType.SECURITY, StepStatus.COMPLETE, null);
+        StepTransitionResult transition = service.transitionStep(
+                event(payload),
+                TransactionStatus.PROCESSING,
+                0,
+                StepType.SECURITY,
+                StepStatus.COMPLETE,
+                null);
 
-        assertTrue(result.applied());
-        assertSame(response, result.state());
-        verify(keyValueTemplate).update(any());
+        assertFalse(transition.applied());
+        assertSame(response, transition.state());
+        assertEquals(StepStatus.PROCESSING, entity.getSteps().get(StepType.SECURITY));
+        assertTrue(entity.getStepResults() == null || entity.getStepResults().isEmpty());
     }
 
     @Test
-    void rejectsInconsistentTransitionContractBeforeTouchingRedis() {
+    void failureTransitionIsMonotonicAndStoresErrorResult() {
+        EventStateEntity entity = processingEntity(1, StepType.ASSETS);
+        JsonNode error = objectMapper.createObjectNode().put("code", "ASSET_ERROR");
+        mappedResponse(entity);
+        mockAtomicUpdate(Optional.of(entity), true);
+
+        StepTransitionResult transition = service.transitionStep(
+                event(payload),
+                TransactionStatus.FAILED,
+                1,
+                StepType.ASSETS,
+                StepStatus.ERROR,
+                error);
+
+        assertTrue(transition.applied());
+        assertEquals(TransactionStatus.FAILED, entity.getStatus());
+        assertEquals(StepStatus.ERROR, entity.getSteps().get(StepType.ASSETS));
+        assertEquals(error, entity.getResult());
+    }
+
+    @Test
+    void rejectsInconsistentTransitionBeforeTouchingPersistence() {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> service.transitionStep(
@@ -179,8 +208,7 @@ class EventStateServiceImplTest {
                         StepStatus.COMPLETE,
                         null));
 
-        verify(redisTemplate, never()).execute(
-                any(), any(), any(), any(), any(Object[].class));
+        verify(repository, never()).updateAtomically(any(), any());
     }
 
     @Test
@@ -255,18 +283,80 @@ class EventStateServiceImplTest {
     }
 
     @Test
-    void claimsStageOnlyWhenRedisReturnsOne() {
-        when(redisTemplate.execute(any(), any(), any(), any(), any(Object[].class)))
-                .thenReturn(1L, 0L);
+    void claimsCompletedStageExactlyOnceThroughAtomicStoreMutation() {
+        EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
+        entity.setStatus(TransactionStatus.PROCESSING);
+        entity.setCurrentStage(1);
+        entity.setSteps(Map.of(
+                StepType.ASSETS, StepStatus.COMPLETE,
+                StepType.ROLES, StepStatus.COMPLETE));
 
+        mockAtomicUpdate(Optional.of(entity), true);
         assertTrue(service.claimStageCompletion(
-                "tx", 1, List.of(StepType.ASSETS, StepType.ROLES)));
+                "tx",
+                1,
+                List.of(StepType.ASSETS, StepType.ROLES)));
+        assertEquals(StepStatus.COMPLETE, entity.getCompletedStages().get(1));
+
+        mockAtomicUpdate(Optional.of(entity), false);
         assertFalse(service.claimStageCompletion(
-                "tx", 1, List.of(StepType.ASSETS)));
+                "tx",
+                1,
+                List.of(StepType.ASSETS, StepType.ROLES)));
+    }
+
+    @Test
+    void refusesEmptyStageClaimWithoutTouchingPersistence() {
         assertFalse(service.claimStageCompletion("tx", 1, List.of()));
+        verify(repository, never()).updateAtomically(eq("tx"), any());
+    }
+
+    private EventStateEntity processingEntity(int stage, StepType step) {
+        EventStateEntity entity = new EventStateEntity();
+        entity.setTransactionId("tx");
+        entity.setStatus(TransactionStatus.PROCESSING);
+        entity.setCurrentStage(stage);
+        entity.setSteps(Map.of(step, StepStatus.PROCESSING));
+        return entity;
+    }
+
+    private EventStateResponse mappedResponse(EventStateEntity entity) {
+        EventStateModel model = new EventStateModel();
+        EventStateResponse response = new EventStateResponse();
+        when(modelMapper.toModel(entity)).thenReturn(model);
+        when(modelMapper.toResponse(model)).thenReturn(response);
+        return response;
+    }
+
+    private void mockAtomicUpdate(
+            Optional<EventStateEntity> initial,
+            boolean expectedApplied) {
+
+        when(repository.updateAtomically(eq("tx"), any()))
+                .thenAnswer(invocation -> {
+                    Function<Optional<EventStateEntity>, Optional<EventStateEntity>> mutation =
+                            invocation.getArgument(1);
+                    Optional<EventStateEntity> desired = mutation.apply(initial);
+                    boolean applied = desired.isPresent();
+
+                    if (expectedApplied) {
+                        assertTrue(applied);
+                    } else {
+                        assertFalse(applied);
+                    }
+
+                    return new AtomicStateUpdate(
+                            applied,
+                            desired.isPresent() ? desired : initial);
+                });
     }
 
     private CommonModel event(JsonNode eventPayload) {
-        return new CommonModel("tx", "SECURITY", OperationType.LOGIN, eventPayload);
+        return new CommonModel(
+                "tx",
+                "SECURITY",
+                OperationType.LOGIN,
+                eventPayload);
     }
 }

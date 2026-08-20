@@ -2,11 +2,13 @@ package mx.com.leenustechs.ciaState.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.mockito.Mockito.mock;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import org.springframework.data.redis.core.RedisTemplate;
+
+import com.google.auth.oauth2.GoogleCredentials;
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.FirebaseOptions;
 
 import feign.RequestTemplate;
 import mx.com.leenustechs.ciaState.business.adapters.in.ApiInterceptor;
@@ -22,8 +24,12 @@ class ConfigurationTest {
         new FeingConfig().requestInterceptor().apply(template);
 
         assertNotNull(mapper);
-        assertEquals(java.util.List.of("application/json"), template.headers().get("Content-Type"));
-        assertEquals(java.util.List.of("application/json"), template.headers().get("Accept"));
+        assertEquals(
+                java.util.List.of("application/json"),
+                template.headers().get("Content-Type"));
+        assertEquals(
+                java.util.List.of("application/json"),
+                template.headers().get("Accept"));
     }
 
     @Test
@@ -40,15 +46,28 @@ class ConfigurationTest {
     }
 
     @Test
-    void buildsRedisConnectionAndTemplate() {
-        JsonMapper mapper = new JacksonConfig().objectMapper();
-        RedisConfig config = new RedisConfig("localhost", 6379, "user", "secret", mapper);
-        LettuceConnectionFactory factory = config.redisConnectionFactory();
-        RedisTemplate<String, Object> template = config.redisTemplate(factory);
+    void buildsFirebaseRealtimeDatabaseOptions() {
+        GoogleCredentials credentials = mock(GoogleCredentials.class);
+        FirebaseOptions options = new FirebaseConfig().firebaseOptions(
+                credentials,
+                "https://cia-state-default-rtdb.firebaseio.com/");
 
-        assertSame(factory, template.getConnectionFactory());
-        assertNotNull(template.getKeySerializer());
-        assertNotNull(template.getValueSerializer());
+        assertEquals(
+                "https://cia-state-default-rtdb.firebaseio.com/",
+                options.getDatabaseUrl());
+
+        FirebaseApp app = new FirebaseConfig().firebaseApp(options);
+        try {
+            assertEquals("cia-state", app.getName());
+            assertNotNull(new FirebaseConfig().firebaseDatabase(app));
+            assertSameFirebaseApp(app, new FirebaseConfig().firebaseApp(options));
+        } finally {
+            app.delete();
+        }
+    }
+
+    private void assertSameFirebaseApp(FirebaseApp expected, FirebaseApp actual) {
+        assertEquals(expected.getName(), actual.getName());
     }
 
     @Test

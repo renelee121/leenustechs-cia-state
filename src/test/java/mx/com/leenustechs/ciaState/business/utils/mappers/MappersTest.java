@@ -69,7 +69,6 @@ class MappersTest {
         assertEquals("tx", model.getTransactionId());
         assertEquals(created, model.getCreatedAt());
         assertEquals(result, stateMapper.toResponse(roundTrip).getResult());
-        assertNull(entity.getTtl());
         assertNull(inputMapper.toEventStateModel(null, null, null, null, null, null, null));
     }
 
@@ -81,7 +80,6 @@ class MappersTest {
         target.setSteps(new EnumMap<>(Map.of(StepType.SECURITY, StepStatus.COMPLETE)));
         target.setStepResults(Map.of("0:SECURITY", "{\"ok\":true}"));
         target.setCreatedAt(Instant.EPOCH);
-        target.setTtl(99L);
 
         EventStateModel source = new EventStateModel();
         source.setPayload(objectMapper.createObjectNode().put("new", 2));
@@ -96,7 +94,6 @@ class MappersTest {
         assertEquals(2, target.getSteps().size());
         assertEquals("{\"ok\":true}", target.getStepResults().get("0:SECURITY"));
         assertEquals(Instant.EPOCH, target.getCreatedAt());
-        assertEquals(99L, target.getTtl());
     }
 
     @Test

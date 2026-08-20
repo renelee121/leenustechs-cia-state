@@ -1,141 +1,43 @@
 # leenustechs-cia-state
-Project for an open source students state machine
-```
-leenustechs-cia-state
-├─ LICENSE
-├─ README.md
-├─ pom.xml
-├─ src
-│  ├─ main
-│  │  ├─ java
-│  │  │  └─ mx
-│  │  │     └─ com
-│  │  │        └─ leenustechs
-│  │  │           ├─ App.java
-│  │  │           └─ ciaState
-│  │  │              ├─ business
-│  │  │              │  ├─ adapters
-│  │  │              │  │  ├─ in
-│  │  │              │  │  │  ├─ ApiInterceptor.java
-│  │  │              │  │  │  └─ KafkaListenerAdapter.java
-│  │  │              │  │  └─ out
-│  │  │              │  │     └─ KafkaProducerAdapter.java
-│  │  │              │  ├─ repositories
-│  │  │              │  │  └─ EventStateRepository.java
-│  │  │              │  ├─ services
-│  │  │              │  │  ├─ CommandDispatcherService.java
-│  │  │              │  │  ├─ EventStateService.java
-│  │  │              │  │  └─ impl
-│  │  │              │  │     ├─ CommandDispatcherServiceImpl.java
-│  │  │              │  │     └─ EventStateServiceImpl.java
-│  │  │              │  ├─ useCases
-│  │  │              │  │  └─ LoginUseCase.java
-│  │  │              │  └─ utils
-│  │  │              │     ├─ commons
-│  │  │              │     │  ├─ CustomDeserializer.java
-│  │  │              │     │  ├─ CustomSerializer.java
-│  │  │              │     │  ├─ EventOperation.java
-│  │  │              │     │  └─ StageUtils.java
-│  │  │              │     ├─ exceptions
-│  │  │              │     │  ├─ EmptyOperationResponseException.java
-│  │  │              │     │  ├─ TransactionNotFoundException.java
-│  │  │              │     │  └─ handlers
-│  │  │              │     └─ mappers
-│  │  │              │        ├─ CommonModelMapper.java
-│  │  │              │        ├─ EventStateInputMapper.java
-│  │  │              │        └─ EventStateModelMapper.java
-│  │  │              ├─ config
-│  │  │              │  ├─ FeingConfig.java
-│  │  │              │  ├─ InterceptorConfig.java
-│  │  │              │  ├─ JacksonConfig.java
-│  │  │              │  ├─ KafkaConfig.java
-│  │  │              │  └─ RedisConfig.java
-│  │  │              ├─ models
-│  │  │              │  ├─ CommonModel.java
-│  │  │              │  ├─ Event.java
-│  │  │              │  ├─ EventStateModel.java
-│  │  │              │  ├─ constants
-│  │  │              │  │  └─ KafkaTopics.java
-│  │  │              │  ├─ entities
-│  │  │              │  │  └─ EventStateEntity.java
-│  │  │              │  ├─ records
-│  │  │              │  │  └─ WorkflowStage.java
-│  │  │              │  ├─ requests
-│  │  │              │  │  └─ CommonModelRequest.java
-│  │  │              │  ├─ responses
-│  │  │              │  │  ├─ CommonModelResponse.java
-│  │  │              │  │  └─ EventStateResponse.java
-│  │  │              │  └─ types
-│  │  │              │     ├─ OperationType.java
-│  │  │              │     ├─ StepStatus.java
-│  │  │              │     ├─ StepType.java
-│  │  │              │     └─ TransactionStatus.java
-│  │  │              └─ rest
-│  │  └─ resources
-│  │     ├─ application.properties
-│  │     └─ templates
-│  │        └─ hello.html
-│  └─ test
-│     ├─ java
-│     │  └─ mx
-│     │     └─ com
-│     │        └─ leenustechs
-│     └─ resources
-└─ target
-   ├─ classes
-   │  ├─ application.properties
-   │  ├─ mx
-   │  │  └─ com
-   │  │     └─ leenustechs
-   │  │        └─ ciaState
-   │  │           ├─ business
-   │  │           │  ├─ adapters
-   │  │           │  │  ├─ in
-   │  │           │  │  └─ out
-   │  │           │  ├─ repositories
-   │  │           │  ├─ services
-   │  │           │  │  └─ impl
-   │  │           │  ├─ useCases
-   │  │           │  └─ utils
-   │  │           │     ├─ commons
-   │  │           │     ├─ exceptions
-   │  │           │     └─ mappers
-   │  │           ├─ config
-   │  │           └─ models
-   │  │              ├─ constants
-   │  │              ├─ entities
-   │  │              ├─ records
-   │  │              ├─ requests
-   │  │              ├─ responses
-   │  │              └─ types
-   │  └─ templates
-   │     └─ hello.html
-   ├─ generated-sources
-   │  └─ annotations
-   │     └─ mx
-   │        └─ com
-   │           └─ leenustechs
-   │              └─ ciaState
-   │                 └─ business
-   │                    └─ utils
-   │                       └─ mappers
-   │                          ├─ CommonModelMapperImpl.java
-   │                          ├─ EventStateInputMapperImpl.java
-   │                          └─ EventStateModelMapperImpl.java
-   ├─ generated-test-sources
-   │  └─ test-annotations
-   ├─ maven-archiver
-   │  └─ pom.properties
-   ├─ maven-status
-   │  └─ maven-compiler-plugin
-   │     ├─ compile
-   │     │  └─ default-compile
-   │     │     ├─ createdFiles.lst
-   │     │     └─ inputFiles.lst
-   │     └─ testCompile
-   │        └─ default-testCompile
-   │           ├─ createdFiles.lst
-   │           └─ inputFiles.lst
-   └─ test-classes
 
+State machine built with Spring Boot, Java 21, Kafka and Firebase Realtime Database.
+
+## State store
+
+Each workflow is persisted under a configurable RTDB root:
+
+```text
+/workflows/{transactionId}
 ```
+
+The workflow node contains the durable current state (`status`, `currentStage`,
+`steps`, `completedStages`, `stepResults`, `payload`, `result`, timestamps).
+Worker completion and stage claims are coordinated with Firebase Realtime
+Database transactions on the workflow node, so concurrent workers do not use
+last-writer-wins semantics for state-machine transitions.
+
+`stepResults` are stored as JSON-native nested values. A small `present` wrapper
+keeps an explicit result slot even when a worker result is JSON `null`.
+
+There is no expiration policy in the workflow model. Retention, archival and
+analytics are separate concerns from state-machine correctness.
+
+## Configuration
+
+```properties
+firebase.database-url=${FIREBASE_DATABASE_URL}
+firebase.rtdb.workflow-path=${FIREBASE_WORKFLOW_PATH:workflows}
+firebase.rtdb.operation-timeout-seconds=${FIREBASE_OPERATION_TIMEOUT_SECONDS:10}
+```
+
+The server uses Google Application Default Credentials (ADC). For local
+development, point `GOOGLE_APPLICATION_CREDENTIALS` at a service-account file
+outside the repository; in cloud environments use workload/service identity.
+Do not commit credentials to this project.
+
+## Realtime clients
+
+The workflow path is RTDB-native, so an authorized POS/TPV client can observe a
+transaction in realtime. Production clients should normally receive a sanitized
+read-only projection rather than unrestricted access to internal workflow
+payloads.
