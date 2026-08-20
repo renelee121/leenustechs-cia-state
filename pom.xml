@@ -27,12 +27,15 @@
 
         <spring-cloud.version>2025.1.1</spring-cloud.version>
 
-        <maven.minimum.version>3.9.16</maven.minimum.version>
+        <maven.minimum.version>3.9.12</maven.minimum.version>
 
         <lombok.version>1.18.46</lombok.version>
         <mapstruct.version>1.6.3</mapstruct.version>
         <jacoco.version>0.8.14</jacoco.version>
         <firebase-admin.version>9.10.0</firebase-admin.version>
+        <google-cloud-libraries-bom.version>26.83.0</google-cloud-libraries-bom.version>
+        <j2objc-annotations.version>3.1</j2objc-annotations.version>
+        <error-prone-annotations.version>2.48.0</error-prone-annotations.version>
         <lombok-mapstruct-binding.version>
             0.2.0
         </lombok-mapstruct-binding.version>
@@ -48,6 +51,24 @@
 
     <dependencyManagement>
         <dependencies>
+
+            <!--
+                Overrides explícitos PRIMERO.
+                Maven 3 usa "first wins" en dependencyManagement imports.
+            -->
+            <dependency>
+                <groupId>com.google.j2objc</groupId>
+                <artifactId>j2objc-annotations</artifactId>
+                <version>${j2objc-annotations.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>${error-prone-annotations.version}</version>
+            </dependency>
+
+            <!-- Spring Cloud Dependencies -->
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
@@ -55,6 +76,16 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
+            <!-- Google Cloud Libraries BOM -->
+            <dependency>
+                <groupId>com.google.cloud</groupId>
+                <artifactId>libraries-bom</artifactId>
+                <version>${google-cloud-libraries-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
         </dependencies>
     </dependencyManagement>
 
@@ -111,6 +142,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <!--google-->
+        <dependency>
+            <groupId>com.google.firebase</groupId>
+            <artifactId>firebase-admin</artifactId>
+            <version>${firebase-admin.version}</version>
         </dependency>
 
     </dependencies>
