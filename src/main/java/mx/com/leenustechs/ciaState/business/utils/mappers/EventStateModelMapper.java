@@ -22,8 +22,16 @@ public interface EventStateModelMapper {
 
     EventStateResponse toResponse(EventStateModel model);
 
+    @Mapping(target = "executionId", ignore = true)
+    @Mapping(target = "initialPayload", ignore = true)
+    @Mapping(target = "pendingOutbox", ignore = true)
+    @Mapping(target = "outboxPending", ignore = true)
     EventStateEntity toEntity(EventStateModel model);
 
+    @Mapping(target = "executionId", ignore = true)
+    @Mapping(target = "initialPayload", ignore = true)
+    @Mapping(target = "pendingOutbox", ignore = true)
+    @Mapping(target = "outboxPending", ignore = true)
     @Mapping(target = "payload", ignore = true)
     @Mapping(target = "steps", ignore = true)
     @Mapping(target = "completedStages", ignore = true)

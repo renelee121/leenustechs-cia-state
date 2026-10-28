@@ -8,16 +8,21 @@ import tools.jackson.databind.ObjectMapper;
 
 @RequiredArgsConstructor
 public class CustomSerializer implements Serializer<Object> {
-
     private final ObjectMapper objectMapper;
 
     @Override
     public byte[] serialize(String topic, Object data) {
+        if (data == null) {
+            return null;
+        }
+        // ErrorHandlingDeserializer restores invalid records as bytes for DLT recovery.
+        if (data instanceof byte[] bytes) {
+            return bytes;
+        }
         try {
             return objectMapper.writeValueAsBytes(data);
-        } catch (Exception e) {
-            throw new SerializationException("Error serializing object", e);
+        } catch (Exception exception) {
+            throw new SerializationException("Unable to serialize workflow event for topic " + topic);
         }
     }
-    
 }

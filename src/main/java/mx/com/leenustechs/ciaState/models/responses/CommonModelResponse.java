@@ -1,17 +1,21 @@
 package mx.com.leenustechs.ciaState.models.responses;
 
-
-
 import lombok.Data;
-import lombok.extern.slf4j.Slf4j;
+import mx.com.leenustechs.ciaState.models.types.EventOutcome;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
+import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 import tools.jackson.databind.JsonNode;
 
-@Slf4j
 @Data
-public class CommonModelResponse{
-    private final String transactionId;
-    private final String producer;
-    private final OperationType command;
-    private final JsonNode payload;
+public class CommonModelResponse {
+    private String transactionId;
+    private String producer;
+    private OperationType command;
+    @lombok.ToString.Exclude
+    private JsonNode payload;
+    private String eventId;
+    private String executionId;
+    private Integer stageIndex;
+    private EventOutcome outcome;
+    private TransactionStatus status;
 }
