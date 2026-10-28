@@ -79,6 +79,31 @@ class FirebaseEventStateRepositoryTest {
         assertEquals(expected.getPayload(), repository.fromNativeValue(nativeValue).orElseThrow().getPayload());
     }
 
+    @Test void preservesUnsupportedNumbersAndDeepPayloadsUsingOnlyTheirCanonicalRepresentations() {
+        EventStateEntity expected = entity();
+        expected.setPayload(mapper.readTree("{\"n\":9223372036854775808}"));
+        expected.setInitialPayload(mapper.createObjectNode().put("x".repeat(800), "value"));
+        var deep = mapper.createObjectNode().put("leaf", true);
+        for (int i = 0; i < 35; i++) deep = mapper.createObjectNode().set("nested", deep);
+        expected.setResult(deep);
+        expected.setStepResults(Map.of("0:SECURITY", expected.getPayload().toString()));
+        expected.getPendingOutbox().get("event1").event().setPayload(expected.getPayload());
+        var encoded = repository.toNativeValue(expected);
+        assertFalse(encoded.containsKey("payload"));
+        assertFalse(encoded.containsKey("initialPayload"));
+        assertFalse(encoded.containsKey("result"));
+        com.google.firebase.database.core.ValidationPath.validateWithObject(
+                new com.google.firebase.database.core.Path("workflows/tx"), encoded);
+        Object normalized = com.google.firebase.database.snapshot.NodeUtilities.NodeFromJSON(encoded).getValue();
+        assertEquals(expected, repository.fromNativeValue(normalized).orElseThrow());
+    }
+
+    @Test void rejectsImpossibleReferencePathsBeforeAnyNetworkOperation() {
+        assertThrows(IllegalArgumentException.class, () -> repository.findById("x".repeat(768)));
+        assertThrows(IllegalArgumentException.class, () -> repository.updateAtomically("bad/id", Function.identity()));
+        verify(database, never()).getReference(anyString());
+    }
+
     @Test void readsLegacyNumericStagesDirectResultsAndTimestamps() {
         var raw = new LinkedHashMap<>(repository.toNativeValue(entity()));
         raw.remove("pendingOutbox"); raw.remove("executionId"); raw.remove("initialPayload"); raw.remove("initialPayloadJson");

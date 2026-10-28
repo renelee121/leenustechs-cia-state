@@ -6,6 +6,7 @@ import static org.mockito.Mockito.*;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -13,46 +14,65 @@ import java.util.function.Function;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.invocation.InvocationOnMock;
 import org.springframework.kafka.support.SendResult;
 
 import mx.com.leenustechs.ciaState.business.adapters.out.KafkaProducerAdapter;
 import mx.com.leenustechs.ciaState.business.repositories.EventStateRepository;
 import mx.com.leenustechs.ciaState.models.CommonModel;
+import mx.com.leenustechs.ciaState.models.constants.KafkaTopics;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
-import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
-import mx.com.leenustechs.ciaState.models.records.OutboxEvent;
-import mx.com.leenustechs.ciaState.models.types.OperationType;
+import mx.com.leenustechs.ciaState.models.records.*;
+import mx.com.leenustechs.ciaState.models.types.*;
+import tools.jackson.databind.json.JsonMapper;
 
 class OutboxPublisherTest {
     private final EventStateRepository repository = mock(EventStateRepository.class);
     private final KafkaProducerAdapter producer = mock(KafkaProducerAdapter.class);
     private final AtomicReference<EventStateEntity> durableState = new AtomicReference<>();
+    private final JsonMapper mapper = JsonMapper.builder().findAndAddModules().build();
     private OutboxPublisher publisher;
     private OutboxEvent event;
+    private boolean failWrites;
 
     @BeforeEach
     void setup() {
-        event = new OutboxEvent("stable-id", "worker-topic", "tx", new CommonModel("tx", "CIA_STATE", OperationType.LOGIN, null));
+        CommonModel command = new CommonModel("tx", "CIA_STATE", OperationType.LOGIN, mapper.createObjectNode());
+        command.setStageIndex(0);
+        event = new OutboxEvent("stable-id", "worker-topic", "tx", command);
         EventStateEntity state = new EventStateEntity();
         state.setTransactionId("tx");
-        state.setPendingOutbox(new LinkedHashMap<>(java.util.Map.of(event.id(), event)));
+        state.setStatus(TransactionStatus.PROCESSING);
+        state.setCurrentStage(0);
+        state.setPendingOutbox(new LinkedHashMap<>(Map.of(event.id(), event)));
         state.setOutboxPending(true);
-        durableState.set(state);
-        when(repository.findWithPendingOutbox(anyInt(), nullable(String.class))).thenAnswer(call -> List.of(durableState.get()));
-        when(repository.updateAtomically(eq("tx"), any())).thenAnswer(call -> {
-            Function<Optional<EventStateEntity>, Optional<EventStateEntity>> mutation = call.getArgument(1);
-            Optional<EventStateEntity> desired = mutation.apply(Optional.ofNullable(durableState.get()));
-            desired.ifPresent(durableState::set);
-            return new AtomicStateUpdate(desired.isPresent(), Optional.ofNullable(durableState.get()));
-        });
+        durableState.set(copy(state));
+        when(repository.scanPendingOutbox(anyInt(), nullable(String.class)))
+                .thenAnswer(call -> page(List.of(copy(durableState.get())), "tx"));
+        when(repository.updateAtomically(anyString(), any())).thenAnswer(this::applyMutation);
         publisher = new OutboxPublisher(repository, producer, 10, 1);
+    }
+
+    private EventStateEntity copy(EventStateEntity state) {
+        return state == null ? null : mapper.convertValue(state, EventStateEntity.class);
+    }
+
+    private AtomicStateUpdate applyMutation(InvocationOnMock call) {
+        Function<Optional<EventStateEntity>, Optional<EventStateEntity>> mutation = call.getArgument(1);
+        Optional<EventStateEntity> desired = mutation.apply(Optional.ofNullable(copy(durableState.get())));
+        if (desired.isPresent() && failWrites) throw new IllegalStateException("database unavailable");
+        desired.ifPresent(durableState::set);
+        return new AtomicStateUpdate(desired.isPresent(), Optional.ofNullable(copy(durableState.get())));
+    }
+
+    private OutboxPage page(List<EventStateEntity> rows, String cursor) {
+        return new OutboxPage(rows, cursor, List.of());
     }
 
     @Test
     void acknowledgedSendRemovesOnlyItsOwnEvent() {
         OutboxEvent another = new OutboxEvent("other-id", "other", "tx", event.event());
         when(producer.publish(anyString(), anyString(), any(), anyString())).thenAnswer(call -> {
-            // Simulates a concurrent workflow transition while Kafka send is in flight.
             var updated = new LinkedHashMap<>(durableState.get().getPendingOutbox());
             updated.put(another.id(), another);
             durableState.get().setPendingOutbox(updated);
@@ -69,9 +89,9 @@ class OutboxPublisherTest {
         when(producer.publish(anyString(), anyString(), any(), anyString()))
                 .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker down")))
                 .thenReturn(CompletableFuture.completedFuture(null));
+        EventStateEntity before = copy(durableState.get());
         publisher.publishPending();
-        assertEquals(java.util.Set.of("stable-id"), durableState.get().getPendingOutbox().keySet());
-        verify(repository, never()).updateAtomically(anyString(), any());
+        assertEquals(before, durableState.get());
         new OutboxPublisher(repository, producer, 10, 1).publishPending();
         assertTrue(durableState.get().getPendingOutbox().isEmpty());
         assertFalse(durableState.get().isOutboxPending());
@@ -81,7 +101,7 @@ class OutboxPublisherTest {
     @Test
     void lostAcknowledgementAfterKafkaAcceptanceRepublishesSameIdentity() {
         when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
-        doThrow(new IllegalStateException("database unavailable")).when(repository).updateAtomically(anyString(), any());
+        failWrites = true;
         publisher.publishPending();
         assertTrue(durableState.get().isOutboxPending());
         publisher.publishPending();
@@ -91,9 +111,9 @@ class OutboxPublisherTest {
     @Test
     void sendTimeoutKeepsDurableMessage() {
         when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(new CompletableFuture<>());
+        EventStateEntity before = copy(durableState.get());
         publisher.publishPending();
-        assertTrue(durableState.get().isOutboxPending());
-        verify(repository, never()).updateAtomically(anyString(), any());
+        assertEquals(before, durableState.get());
     }
 
     @Test
@@ -103,7 +123,7 @@ class OutboxPublisherTest {
         try {
             publisher.publishPending();
             assertTrue(Thread.currentThread().isInterrupted());
-            verify(repository, never()).updateAtomically(anyString(), any());
+            assertTrue(durableState.get().isOutboxPending());
         } finally {
             Thread.interrupted();
         }
@@ -111,50 +131,127 @@ class OutboxPublisherTest {
 
     @Test
     void scanFailureCanRecoverOnNextPoll() {
-        when(repository.findWithPendingOutbox(anyInt(), nullable(String.class))).thenThrow(new IllegalStateException("database down"));
+        when(repository.scanPendingOutbox(anyInt(), nullable(String.class))).thenThrow(new IllegalStateException("database down"));
         assertDoesNotThrow(publisher::publishPending);
         verifyNoInteractions(producer);
     }
 
     @Test
-    void emptyAndAlreadyAcknowledgedSnapshotsAreHarmless() {
-        when(producer.publish(anyString(), anyString(), any(), anyString())).thenAnswer(call -> {
-            durableState.get().setPendingOutbox(new LinkedHashMap<>());
-            durableState.get().setOutboxPending(false);
-            return CompletableFuture.completedFuture(null);
-        });
+    void confirmationFailureDoesNotSendAnUnverifiedCommand() {
+        doThrow(new IllegalStateException("database unavailable"))
+                .when(repository).updateAtomically(anyString(), any());
         publisher.publishPending();
-        assertFalse(durableState.get().isOutboxPending());
+        verifyNoInteractions(producer);
+        assertTrue(durableState.get().isOutboxPending());
+    }
+
+    @Test
+    void staleSnapshotDoesNotRepublishAnAlreadyAcknowledgedOrMissingIntent() {
+        var stale = page(List.of(copy(durableState.get())), "tx");
+        when(repository.scanPendingOutbox(anyInt(), nullable(String.class))).thenReturn(stale);
+        durableState.get().setPendingOutbox(new LinkedHashMap<>());
+        publisher.publishPending();
         durableState.get().setPendingOutbox(null);
         publisher.publishPending();
-        verify(producer, times(1)).publish(anyString(), anyString(), any(), anyString());
+        durableState.set(null);
+        publisher.publishPending();
+        verifyNoInteractions(producer);
+    }
+
+    @Test
+    void emptyOutboxSnapshotsAreHarmless() {
+        durableState.get().setPendingOutbox(null);
+        publisher.publishPending();
+        verifyNoInteractions(producer);
     }
 
     @Test
     void failingFirstPageDoesNotStarveLaterWorkflows() {
-        EventStateEntity later = new EventStateEntity();
+        EventStateEntity later = copy(durableState.get());
         later.setTransactionId("zz");
-        later.setPendingOutbox(java.util.Map.of("later", new OutboxEvent("later", "other", "zz", event.event())));
-        when(repository.findWithPendingOutbox(10, null)).thenReturn(List.of(durableState.get()));
-        when(repository.findWithPendingOutbox(10, "tx")).thenReturn(List.of(later));
-        when(repository.findWithPendingOutbox(10, "zz")).thenReturn(List.of());
+        later.setPendingOutbox(Map.of("later", new OutboxEvent("later", "other", "zz", event.event())));
+        when(repository.scanPendingOutbox(10, null)).thenReturn(page(List.of(copy(durableState.get())), "tx"));
+        when(repository.scanPendingOutbox(10, "tx")).thenAnswer(call -> { durableState.set(copy(later)); return page(List.of(later), "zz"); });
+        when(repository.scanPendingOutbox(10, "zz")).thenReturn(page(List.of(), null));
         when(producer.publish(anyString(), anyString(), any(), anyString()))
                 .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("unavailable")));
         publisher.publishPending();
         publisher.publishPending();
         publisher.publishPending();
-        publisher.publishPending();
         verify(producer).publish("other", "zz", event.event(), "later");
-        verify(producer, times(2)).publish("worker-topic", "tx", event.event(), "stable-id");
+        verify(producer).publish("worker-topic", "tx", event.event(), "stable-id");
+    }
+
+    @Test
+    void allCorruptPageAdvancesToHealthyWorkflowsAndWrapsAtEnd() {
+        when(repository.scanPendingOutbox(10, null)).thenReturn(new OutboxPage(List.of(), "bad", List.of("bad")));
+        when(repository.scanPendingOutbox(10, "bad")).thenReturn(page(List.of(copy(durableState.get())), "tx"));
+        when(repository.scanPendingOutbox(10, "tx")).thenReturn(page(List.of(), null));
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+        publisher.publishPending();
+        publisher.publishPending();
+        publisher.publishPending();
+        publisher.publishPending();
+        verify(repository, times(2)).scanPendingOutbox(10, null);
+        verify(producer).publish("worker-topic", "tx", event.event(), "stable-id");
+    }
+
+    @Test
+    void terminalStateCancelsLegacyCommandsBeforeSendingFinalNotification() {
+        durableState.get().setStatus(TransactionStatus.FAILED);
+        OutboxEvent terminal = new OutboxEvent("final", KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE, "tx", event.event());
+        durableState.get().getPendingOutbox().put(terminal.id(), terminal);
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+        publisher.publishPending();
+        verify(producer).publish(terminal.topic(), "tx", terminal.event(), "final");
+        verify(producer, never()).publish(eq("worker-topic"), anyString(), any(), anyString());
+        assertFalse(durableState.get().isOutboxPending());
+    }
+
+    @Test
+    void failureAfterScanCancelsEveryCommandInTheStaleSnapshot() {
+        var stale = page(List.of(copy(durableState.get())), "tx");
+        when(repository.scanPendingOutbox(anyInt(), nullable(String.class))).thenAnswer(call -> {
+            durableState.get().setStatus(TransactionStatus.FAILED);
+            durableState.get().setPendingOutbox(new LinkedHashMap<>());
+            return stale;
+        });
+        publisher.publishPending();
+        verifyNoInteractions(producer);
+    }
+
+    @Test
+    void failureDuringSendDoesNotStartTheNextParallelCommand() {
+        OutboxEvent sibling = new OutboxEvent("sibling", "sibling-topic", "tx", event.event());
+        durableState.get().getPendingOutbox().put(sibling.id(), sibling);
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenAnswer(call -> {
+            durableState.get().setStatus(TransactionStatus.FAILED);
+            durableState.get().setPendingOutbox(new LinkedHashMap<>());
+            return CompletableFuture.completedFuture(null);
+        });
+        publisher.publishPending();
+        verify(producer, times(1)).publish(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
+    void obsoleteStageCommandsAreRemovedButFutureAndPrematureFinalEventsAreNotSent() {
+        durableState.get().setCurrentStage(1);
+        publisher.publishPending();
+        assertFalse(durableState.get().isOutboxPending());
+        event.event().setStageIndex(2);
+        durableState.get().setPendingOutbox(new LinkedHashMap<>(Map.of(event.id(), event)));
+        publisher.publishPending();
+        OutboxEvent premature = new OutboxEvent("final", KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE, "tx", event.event());
+        durableState.get().setPendingOutbox(new LinkedHashMap<>(Map.of("final", premature)));
+        publisher.publishPending();
+        verifyNoInteractions(producer);
     }
 
     @Test
     void persistedWorkflowResumesDeliveryWithNewPublisherInstance() {
         var memory = new mx.com.leenustechs.ciaState.support.MemoryEventStateRepository();
-        var mapper = tools.jackson.databind.json.JsonMapper.builder().findAndAddModules().build();
         var service = new mx.com.leenustechs.ciaState.business.services.impl.EventStateServiceImpl(memory, mapper);
-        var workflow = java.util.List.of(mx.com.leenustechs.ciaState.models.records.WorkflowStage.single(
-                mx.com.leenustechs.ciaState.models.types.StepType.SECURITY));
+        var workflow = List.of(WorkflowStage.single(StepType.SECURITY));
         service.process(new CommonModel("tx", "CIA_API", OperationType.LOGIN, mapper.readTree("{}")), workflow);
         String persistedId = memory.findById("tx").orElseThrow().getPendingOutbox().keySet().iterator().next();
         when(producer.publish(anyString(), anyString(), any(), anyString()))

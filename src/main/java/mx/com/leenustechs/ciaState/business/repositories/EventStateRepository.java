@@ -6,6 +6,7 @@ import java.util.function.Function;
 
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
 import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
+import mx.com.leenustechs.ciaState.models.records.OutboxPage;
 
 /**
  * Persistence port for workflow state.
@@ -19,10 +20,18 @@ public interface EventStateRepository {
     Optional<EventStateEntity> findById(String transactionId);
 
     default List<EventStateEntity> findWithPendingOutbox(int limit) {
-        return findWithPendingOutbox(limit, null);
+        return scanPendingOutbox(limit, null).workflows();
     }
 
-    List<EventStateEntity> findWithPendingOutbox(int limit, String afterTransactionId);
+    default List<EventStateEntity> findWithPendingOutbox(int limit, String afterTransactionId) {
+        return scanPendingOutbox(limit, afterTransactionId).workflows();
+    }
+
+    /**
+     * Scans at most {@code limit} raw workflows. The cursor includes rejected
+     * rows so a corrupt workflow cannot prevent later workflows from publishing.
+     */
+    OutboxPage scanPendingOutbox(int limit, String afterTransactionId);
 
     AtomicStateUpdate updateAtomically(
             String transactionId,

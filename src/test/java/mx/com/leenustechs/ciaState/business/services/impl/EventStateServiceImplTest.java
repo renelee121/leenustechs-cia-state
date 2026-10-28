@@ -71,14 +71,14 @@ class EventStateServiceImplTest {
             for (var result : executor.invokeAll(tasks)) result.get();
         }
         assertEquals(2, state().getCurrentStage());
-        assertEquals(4, state().getPendingOutbox().size());
+        assertEquals(1, state().getPendingOutbox().size());
         assertEquals(json("{\"base\":1,\"auth\":true,\"assets\":[1],\"roles\":[2]}"), state().getPayload());
         service = new EventStateServiceImpl(repository, mapper); // restart uses durable state
         var result = service.process(event("MODULES", "{\"modules\":[3]}"), workflow);
         assertEquals(TransactionStatus.COMPLETED, result.getStatus());
         assertTrue(result.getResult().has("modules"));
         EventStateEntity complete = state();
-        assertEquals(5, complete.getPendingOutbox().size());
+        assertEquals(1, complete.getPendingOutbox().size());
         service.process(event("MODULES", "{\"modules\":[999]}"), workflow);
         service.process(event("CIA_API", "{\"base\":1}"), workflow);
         assertEquals(complete, state());
@@ -92,7 +92,7 @@ class EventStateServiceImplTest {
         assertEquals(TransactionStatus.FAILED, result.getStatus());
         assertEquals("INVALID_STAGE_RESULTS", result.getResult().get("error_code").asText());
         assertFalse(result.getResult().toString().contains("shared"));
-        assertEquals(4, state().getPendingOutbox().size());
+        assertEquals(1, state().getPendingOutbox().size());
         assertTrue(state().getPendingOutbox().values().stream().anyMatch(o -> o.event().getOutcome() == EventOutcome.FAILURE));
         EventStateEntity failed = state();
         service.process(event("ROLES", "{}"), workflow);
@@ -111,6 +111,82 @@ class EventStateServiceImplTest {
         assertEquals(TransactionStatus.FAILED, state().getStatus());
         assertEquals(StepStatus.ERROR, state().getSteps().get(StepType.ASSETS));
         assertEquals(failure.getPayload(), state().getResult());
+    }
+
+    @Test void acceptedParallelResultRemovesOnlyItsCommandAndKeepsSiblingPending() {
+        first();
+        var before = state().getPendingOutbox();
+        assertEquals(2, before.size());
+        String assetsId = before.values().stream().filter(o -> o.topic().equals(StepType.ASSETS.getTopic()))
+                .findFirst().orElseThrow().id();
+        String rolesId = before.values().stream().filter(o -> o.topic().equals(StepType.ROLES.getTopic()))
+                .findFirst().orElseThrow().id();
+        service.process(event("ASSETS", "{\"assets\":[1]}"), workflow);
+        assertEquals(java.util.Set.of(rolesId), state().getPendingOutbox().keySet());
+        assertFalse(state().getPendingOutbox().containsKey(assetsId));
+        assertTrue(state().isOutboxPending());
+        EventStateEntity waiting = state();
+        service.process(event("ASSETS", "{\"assets\":[999]}"), workflow);
+        assertEquals(waiting, state());
+    }
+
+    @Test void failureCancelsSiblingCommandsAndKeepsOnlyOneStableFinalNotification() {
+        first();
+        assertEquals(2, state().getPendingOutbox().size());
+        CommonModel failure = event("ASSETS", "{\"message\":\"denied\"}");
+        failure.setOutcome(EventOutcome.FAILURE);
+        service.process(failure, workflow);
+        EventStateEntity failed = state();
+        assertEquals(TransactionStatus.FAILED, failed.getStatus());
+        assertEquals(1, failed.getPendingOutbox().size());
+        var finalEvent = failed.getPendingOutbox().values().iterator().next();
+        assertEquals(mx.com.leenustechs.ciaState.models.constants.KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE, finalEvent.topic());
+        assertEquals(EventOutcome.FAILURE, finalEvent.event().getOutcome());
+        assertTrue(failed.isOutboxPending());
+        service.process(failure, workflow);
+        service.process(event("ROLES", "{}"), workflow);
+        service.process(event("CIA_API", "{\"base\":1}"), workflow);
+        assertEquals(failed, state());
+        assertEquals(java.util.Set.of(finalEvent.id()), state().getPendingOutbox().keySet());
+    }
+
+    @Test void successfulCompletionCancelsLegacyPendingCommandsAndKeepsOnlyFinalNotification() {
+        first();
+        var obsolete = state().getPendingOutbox().values().iterator().next();
+        service.process(event("ASSETS", "{}"), workflow);
+        service.process(event("ROLES", "{}"), workflow);
+        // Older versions retained commands after their worker response. Simulate such a
+        // restored state to verify terminal cleanup does not depend on new per-step cleanup.
+        repository.updateAtomically("tx", current -> {
+            var persisted = current.orElseThrow();
+            var pending = new java.util.LinkedHashMap<>(persisted.getPendingOutbox());
+            pending.put(obsolete.id(), obsolete);
+            persisted.setPendingOutbox(pending);
+            return java.util.Optional.of(persisted);
+        });
+        assertEquals(2, state().getPendingOutbox().size());
+        service.process(event("MODULES", "{}"), workflow);
+        EventStateEntity completed = state();
+        assertEquals(TransactionStatus.COMPLETED, completed.getStatus());
+        assertEquals(1, completed.getPendingOutbox().size());
+        var finalEvent = completed.getPendingOutbox().values().iterator().next();
+        assertEquals(mx.com.leenustechs.ciaState.models.constants.KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE, finalEvent.topic());
+        assertEquals(EventOutcome.SUCCESS, finalEvent.event().getOutcome());
+        service.process(event("MODULES", "{}"), workflow);
+        assertEquals(completed, state());
+    }
+
+    @Test void workerResultsHandleLegacyStateWithoutAnOutbox() {
+        start();
+        repository.updateAtomically("tx", current -> {
+            var persisted = current.orElseThrow();
+            persisted.setPendingOutbox(null);
+            persisted.setOutboxPending(false);
+            return java.util.Optional.of(persisted);
+        });
+        service.process(event("SECURITY", "{}"), workflow);
+        assertEquals(1, state().getCurrentStage());
+        assertEquals(2, state().getPendingOutbox().size());
     }
 
     @Test void legacyFailuresNullPayloadAndExecutionCorrelation() {

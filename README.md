@@ -53,13 +53,32 @@ Firebase removes empty containers/null children and may coerce numeric-key
 objects into arrays. Canonical internal JSON companions retain exact payloads
 and outbox envelopes; RTDB-native fields remain available as realtime
 projections. Payloads with Firebase-unsafe object keys retain their canonical
-representation while omitting the unsupported native projection.
+representation while omitting the unsupported native projection. This also
+applies to numbers outside Firebase's supported types and projections exceeding
+Firebase path/depth limits. The adapter validates the configured root, transaction
+path and the complete required metadata with the pinned SDK before writing.
+Unwritable required paths/metadata are rejected with sanitized diagnostics; their
+values are never silently truncated. Server-side write-size limits still apply.
 
 The scheduled outbox publisher scans `outboxPending == true`, waits for Kafka's
 send acknowledgement and only then removes that individual event atomically.
-Failed or interrupted sends stay pending and are retried after a restart. Its
-cursor rotates across workflows so an unavailable destination does not starve
-later batches.
+Failed or interrupted sends remain pending while still relevant and are retried
+after a restart. Accepted worker results remove their own command intents. A
+terminal transition cancels all remaining worker commands atomically and keeps
+only the final notification. The cursor rotates across workflows so an
+unavailable destination does not starve later batches.
+
+The publisher confirms the current intent in a server-checked RTDB transaction
+before each send, so an older scan cannot authorize an already-cancelled command.
+A send authorized just before cancellation may still finish; Kafka sends and
+worker side effects cannot be recalled by the RTDB transaction. Workers should
+check execution validity when cancellation affects their side effects, in
+addition to deduplicating event IDs.
+
+Corrupt pending workflows are skipped individually and reported by database key
+without logging payloads. The cursor advances over raw rows even if the entire
+page is corrupt, so healthy later workflows can proceed. Corrupt source data is
+retained for repair; a database outage still fails the scan and is retried.
 
 Delivery is **at least once**. A crash after Kafka accepts a send but before
 Firebase records its acknowledgement can publish it again. Concurrent service
@@ -146,6 +165,8 @@ mvn spring-boot:run
 The tests exercise event contracts, Kafka factories/recovery, atomic transitions,
 concurrent and duplicate results, aggregation conflicts, persistence codecs and
 outbox restart/retry behavior without requiring external service credentials.
+Regression checks also cover cancellation after stale scans, all-corrupt scan
+pages and fallback JSON persistence through the actual Firebase SDK validators.
 They do not replace a smoke test against your actual Firebase/Kafka deployment.
 
 Before rollout, update workers/final consumers to accept the envelope and

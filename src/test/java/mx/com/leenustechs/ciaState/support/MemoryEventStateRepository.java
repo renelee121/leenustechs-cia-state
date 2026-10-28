@@ -8,6 +8,7 @@ import java.util.function.Function;
 import mx.com.leenustechs.ciaState.business.repositories.EventStateRepository;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
 import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
+import mx.com.leenustechs.ciaState.models.records.OutboxPage;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Isolated snapshots and a lock model the atomic repository contract for workflow tests. */
@@ -22,10 +23,11 @@ public final class MemoryEventStateRepository implements EventStateRepository {
         return Optional.ofNullable(states.get(id)).map(this::copy);
     }
     @Override
-    public synchronized List<EventStateEntity> findWithPendingOutbox(int limit, String afterTransactionId) {
-        return states.values().stream().filter(e -> e.getPendingOutbox() != null && !e.getPendingOutbox().isEmpty())
+    public synchronized OutboxPage scanPendingOutbox(int limit, String afterTransactionId) {
+        var page = states.values().stream().filter(e -> e.getPendingOutbox() != null && !e.getPendingOutbox().isEmpty())
                 .filter(e -> afterTransactionId == null || e.getTransactionId().compareTo(afterTransactionId) > 0)
                 .sorted(java.util.Comparator.comparing(EventStateEntity::getTransactionId)).limit(limit).map(this::copy).toList();
+        return new OutboxPage(page, page.isEmpty() ? null : page.getLast().getTransactionId(), List.of());
     }
     @Override
     public synchronized AtomicStateUpdate updateAtomically(String id,

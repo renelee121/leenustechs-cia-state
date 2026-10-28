@@ -13,6 +13,8 @@ import lombok.extern.slf4j.Slf4j;
 import mx.com.leenustechs.ciaState.business.adapters.out.KafkaProducerAdapter;
 import mx.com.leenustechs.ciaState.business.repositories.EventStateRepository;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
+import mx.com.leenustechs.ciaState.models.constants.KafkaTopics;
+import mx.com.leenustechs.ciaState.models.types.TransactionStatus;
 import mx.com.leenustechs.ciaState.models.records.OutboxEvent;
 
 /**
@@ -45,22 +47,26 @@ public class OutboxPublisher {
     @Scheduled(fixedDelayString = "${outbox.poll-interval-ms:1000}", initialDelayString = "${outbox.poll-interval-ms:1000}")
     public synchronized void publishPending() {
         try {
-            var batch = repository.findWithPendingOutbox(batchSize, cursor);
-            if (batch.isEmpty()) {
-                cursor = null;
-                return;
+            var page = repository.scanPendingOutbox(batchSize, cursor);
+            // Advance by raw rows, even when every row on this page is corrupt.
+            cursor = page.nextCursor();
+            for (String rejectedId : page.rejectedWorkflowIds()) {
+                log.warn("Skipping invalid pending workflow. transactionId={}", rejectedId);
             }
-            // Rotate across polls: a failing first page must not starve later workflows.
-            cursor = batch.getLast().getTransactionId();
-            for (EventStateEntity workflow : batch) {
+            for (EventStateEntity workflow : page.workflows()) {
                 if (workflow.getPendingOutbox() == null) {
                     continue;
                 }
                 for (OutboxEvent event : workflow.getPendingOutbox().values()) {
                     try {
-                        producer.publish(event.topic(), event.key(), event.event(), event.id())
+                        // A scan is only a snapshot. Confirm the intent still exists before
+                        // starting a send; a sibling worker may have failed since the scan.
+                        Optional<OutboxEvent> pending = currentIntent(workflow.getTransactionId(), event.id());
+                        if (pending.isEmpty()) continue;
+                        OutboxEvent authorized = pending.get();
+                        producer.publish(authorized.topic(), authorized.key(), authorized.event(), authorized.id())
                                 .get(sendTimeoutSeconds, TimeUnit.SECONDS);
-                        acknowledge(workflow.getTransactionId(), event.id());
+                        acknowledge(workflow.getTransactionId(), authorized.id());
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         return;
@@ -74,6 +80,43 @@ public class OutboxPublisher {
         } catch (Exception failure) {
             log.warn("Unable to scan pending outbox. failureType={}", failure.getClass().getSimpleName());
         }
+    }
+
+    private Optional<OutboxEvent> currentIntent(String transactionId, String eventId) {
+        // A no-op RTDB transaction confirms server state; a local read can be stale.
+        var confirmed = repository.updateAtomically(transactionId, current -> current.flatMap(state -> {
+            if (state.getPendingOutbox() == null) return Optional.empty();
+            var remaining = new LinkedHashMap<>(state.getPendingOutbox());
+            boolean removed = remaining.values().removeIf(event -> obsolete(state, event));
+            if (!removed) return Optional.empty();
+            state.setPendingOutbox(remaining);
+            state.setOutboxPending(!remaining.isEmpty());
+            return Optional.of(state);
+        })).state();
+        return confirmed.flatMap(state -> {
+            if (state.getPendingOutbox() == null) return Optional.empty();
+            OutboxEvent event = state.getPendingOutbox().get(eventId);
+            if (event == null) return Optional.empty();
+            if (KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE.equals(event.topic())) {
+                return terminal(state) ? Optional.of(event) : Optional.empty();
+            }
+            if (state.getStatus() != TransactionStatus.PROCESSING
+                    || !java.util.Objects.equals(state.getCurrentStage(), event.event().getStageIndex())) {
+                return Optional.empty();
+            }
+            return Optional.of(event);
+        });
+    }
+
+    private boolean obsolete(EventStateEntity state, OutboxEvent event) {
+        if (KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE.equals(event.topic())) return false;
+        return terminal(state) || (state.getStatus() == TransactionStatus.PROCESSING
+                && state.getCurrentStage() != null && event.event().getStageIndex() != null
+                && event.event().getStageIndex() < state.getCurrentStage());
+    }
+
+    private boolean terminal(EventStateEntity state) {
+        return state.getStatus() == TransactionStatus.COMPLETED || state.getStatus() == TransactionStatus.FAILED;
     }
 
     private void acknowledge(String transactionId, String eventId) {

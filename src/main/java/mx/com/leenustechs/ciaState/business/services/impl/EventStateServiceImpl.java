@@ -94,6 +94,7 @@ public class EventStateServiceImpl implements EventStateService {
                 return Optional.of(state);
             }
             state.getSteps().put(step, StepStatus.COMPLETE);
+            removeCompletedCommand(state, index, step);
             state.setStepResults(state.getStepResults() == null ? new LinkedHashMap<>()
                     : new LinkedHashMap<>(state.getStepResults()));
             state.getStepResults().put(resultKey(index, step), event.getPayload() == null
@@ -165,16 +166,36 @@ public class EventStateServiceImpl implements EventStateService {
     }
 
     private void enqueueFinal(EventStateEntity state, EventOutcome outcome) {
+        // Terminal state and cancellation commit together: only the final notification
+        // may remain pending after this transition. Sends already in flight cannot be recalled.
+        state.setPendingOutbox(new LinkedHashMap<>());
         enqueue(state, "final", KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE, state.getResult(), outcome);
     }
 
-    private void enqueue(EventStateEntity state, String slot, String topic, JsonNode payload, EventOutcome outcome) {
+    private void removeCompletedCommand(EventStateEntity state, int stage, StepType step) {
+        if (state.getPendingOutbox() == null) {
+            return;
+        }
+        var remaining = new LinkedHashMap<>(state.getPendingOutbox());
+        // Receiving this result proves execution even when the Kafka send acknowledgement
+        // was lost. Do not retry its command while waiting for other parallel workers.
+        remaining.remove(outboxEventId(state, stage + ":" + step.name()));
+        state.setPendingOutbox(remaining);
+        state.setOutboxPending(!remaining.isEmpty());
+    }
+
+    private String outboxEventId(EventStateEntity state, String slot) {
         String execution = state.getExecutionId() == null ? state.getTransactionId() : state.getExecutionId();
         String transaction = state.getTransactionId();
         // Length-prefixed tuple encoding keeps identifiers containing ':' unambiguous.
         String identity = transaction.length() + ":" + transaction + execution.length() + ":" + execution
                 + slot.length() + ":" + slot;
-        String id = UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8)).toString();
+        return UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private void enqueue(EventStateEntity state, String slot, String topic, JsonNode payload, EventOutcome outcome) {
+        String execution = state.getExecutionId() == null ? state.getTransactionId() : state.getExecutionId();
+        String id = outboxEventId(state, slot);
         CommonModel outgoing = new CommonModel(state.getTransactionId(), "CIA_STATE", state.getCommand(), copy(payload));
         outgoing.setEventId(id);
         outgoing.setExecutionId(execution);

@@ -31,6 +31,7 @@ import com.google.firebase.database.ValueEventListener;
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.records.OutboxEvent;
+import mx.com.leenustechs.ciaState.models.records.OutboxPage;
 import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
@@ -97,32 +98,49 @@ public class FirebaseEventStateRepository implements EventStateRepository {
     }
 
     @Override
-    public List<EventStateEntity> findWithPendingOutbox(int limit, String afterTransactionId) {
+    public OutboxPage scanPendingOutbox(int limit, String afterTransactionId) {
         if (limit < 1) throw new IllegalArgumentException("Outbox limit must be positive");
-        CompletableFuture<List<EventStateEntity>> future = new CompletableFuture<>();
+        CompletableFuture<OutboxPage> future = new CompletableFuture<>();
         Query pending = firebaseDatabase.getReference(workflowPath).orderByChild("outboxPending");
         Query page = afterTransactionId == null ? pending.equalTo(true).limitToFirst(limit)
                 : pending.startAt(true, afterTransactionId).endAt(true).limitToFirst(Math.addExact(limit, 1));
         page.addListenerForSingleValueEvent(new ValueEventListener() {
-                    @Override
-                    public void onDataChange(DataSnapshot snapshot) {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                try {
+                    List<EventStateEntity> states = new ArrayList<>();
+                    List<String> rejected = new ArrayList<>();
+                    String nextCursor = null;
+                    int examined = 0;
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        String key = Objects.requireNonNull(child.getKey(), "Missing workflow key");
+                        if (Objects.equals(afterTransactionId, key)) continue;
+                        if (examined == limit) break;
+                        examined++;
+                        nextCursor = key;
                         try {
-                            List<EventStateEntity> states = new ArrayList<>();
-                            for (DataSnapshot child : snapshot.getChildren()) {
-                                if (!Objects.equals(afterTransactionId, child.getKey()) && states.size() < limit) {
-                                    fromSnapshot(child).ifPresent(states::add);
-                                }
+                            EventStateEntity state = fromSnapshot(child).orElseThrow();
+                            if (!key.equals(state.getTransactionId())) {
+                                throw new IllegalStateException("Workflow identity does not match its database key");
                             }
-                            future.complete(states);
-                        } catch (RuntimeException e) {
-                            future.completeExceptionally(e);
+                            states.add(state);
+                        } catch (RuntimeException invalidRow) {
+                            // Keep the original data for repair; only expose its key to operators.
+                            rejected.add(key);
                         }
                     }
-                    @Override
-                    public void onCancelled(DatabaseError error) {
-                        future.completeExceptionally(new IllegalStateException("Firebase RTDB outbox read cancelled: " + error.getCode()));
-                    }
-                });
+                    future.complete(new OutboxPage(states, nextCursor, rejected));
+                } catch (RuntimeException infrastructureFailure) {
+                    future.completeExceptionally(infrastructureFailure);
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new IllegalStateException(
+                        "Firebase RTDB outbox read cancelled: " + error.getCode()));
+            }
+        });
         return await(future, "read pending outbox");
     }
 
@@ -205,6 +223,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
     }
 
     DatabaseReference reference(String transactionId) {
+        FirebaseValueValidator.validateWorkflowPath(workflowPath, transactionId);
         return firebaseDatabase
                 .getReference(workflowPath)
                 .child(transactionId);
@@ -230,7 +249,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         put(value, "createdAt", instantToEpochMillis(entity.getCreatedAt()));
         put(value, "updatedAt", instantToEpochMillis(entity.getUpdatedAt()));
 
-        return value;
+        return FirebaseValueValidator.prepare(workflowPath, entity.getTransactionId(), value);
     }
 
     Optional<EventStateEntity> fromNativeValue(Object nativeValue) {
