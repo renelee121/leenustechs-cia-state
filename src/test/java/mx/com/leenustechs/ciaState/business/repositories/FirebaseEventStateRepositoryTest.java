@@ -63,6 +63,25 @@ class FirebaseEventStateRepositoryTest {
         assertEquals(false, repository.toNativeValue(expected).get("outboxPending"));
         assertTrue(repository.fromNativeValue(null).isEmpty());
     }
+    @Test void persistsStageDeadlinesAndOutboxEnqueueTimesAsEpochMilliseconds() {
+        EventStateEntity expected = entity();
+        expected.setStageDeadlineAt(Instant.ofEpochMilli(5000));
+        var old = expected.getPendingOutbox().get("event1");
+        expected.setPendingOutbox(Map.of("event1", new OutboxEvent(old.id(), old.topic(), old.key(), old.event(),
+                Instant.ofEpochMilli(2000))));
+        var encoded = repository.toNativeValue(expected);
+        assertEquals(5000L, encoded.get("stageDeadlineAt"));
+        Map<?, ?> pending = (Map<?, ?>) ((Map<?, ?>) encoded.get("pendingOutbox")).get("event1");
+        assertEquals(2000L, pending.get("enqueuedAt"));
+        Object normalized = com.google.firebase.database.snapshot.NodeUtilities.NodeFromJSON(encoded).getValue();
+        assertEquals(expected, repository.fromNativeValue(normalized).orElseThrow());
+        var legacy = repository.toNativeValue(entity());
+        assertFalse(legacy.containsKey("stageDeadlineAt"));
+        var restored = repository.fromNativeValue(legacy).orElseThrow();
+        assertNull(restored.getStageDeadlineAt());
+        assertNull(restored.getPendingOutbox().get("event1").enqueuedAt());
+    }
+
     @Test void preservesEmptyContainersNullsAndNumericObjectKeysThroughFirebaseNormalization() {
         EventStateEntity expected = entity();
         expected.setInitialPayload(mapper.readTree("{}"));

@@ -2,6 +2,9 @@ package mx.com.leenustechs.ciaState.business.services.impl;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -13,7 +16,6 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 
-import lombok.RequiredArgsConstructor;
 import mx.com.leenustechs.ciaState.business.repositories.EventStateRepository;
 import mx.com.leenustechs.ciaState.business.services.EventStateService;
 import mx.com.leenustechs.ciaState.business.utils.exceptions.TransactionNotFoundException;
@@ -34,11 +36,68 @@ import tools.jackson.databind.node.JsonNodeFactory;
 
 /** All workflow decisions and publications are committed in one RTDB transaction. */
 @Service
-@RequiredArgsConstructor
 public class EventStateServiceImpl implements EventStateService {
     private final EventStateRepository eventStateRepository;
     private final ObjectMapper objectMapper;
     private final StagePayloadAggregator aggregator = new StagePayloadAggregator();
+    private final Clock clock;
+    private final long stageTimeoutSeconds;
+
+    public EventStateServiceImpl(EventStateRepository repository, ObjectMapper mapper) {
+        this(repository, mapper, Clock.systemUTC(), 300);
+    }
+
+    @Autowired
+    public EventStateServiceImpl(EventStateRepository repository, ObjectMapper mapper, Clock clock,
+            @Value("${workflows.stage-timeout-seconds:300}") long stageTimeoutSeconds) {
+        if (stageTimeoutSeconds <= 0) throw new IllegalArgumentException("Stage timeout must be positive");
+        try {
+            clock.instant().plusSeconds(stageTimeoutSeconds).toEpochMilli();
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("Stage timeout is outside the supported timestamp range");
+        }
+        this.eventStateRepository = repository;
+        this.objectMapper = mapper;
+        this.clock = clock;
+        this.stageTimeoutSeconds = stageTimeoutSeconds;
+    }
+
+    @Override
+    public boolean reconcile(String transactionId) {
+        Instant now = clock.instant();
+        return eventStateRepository.updateAtomically(transactionId, current -> current.flatMap(state -> {
+            if (state.getStatus() != TransactionStatus.PROCESSING) {
+                if (state.getStageDeadlineAt() == null) return Optional.empty();
+                state.setStageDeadlineAt(null);
+                return Optional.of(state);
+            }
+            if (state.getStageDeadlineAt() == null) {
+                // Legacy workflows receive a full grace period from first reconciliation.
+                state.setStageDeadlineAt(now.plusSeconds(stageTimeoutSeconds));
+                return Optional.of(state);
+            }
+            if (!expired(state, now)) return Optional.empty();
+            timeout(state, now);
+            return Optional.of(state);
+        })).applied();
+    }
+
+    private boolean expired(EventStateEntity state, Instant now) {
+        return state.getStatus() == TransactionStatus.PROCESSING && state.getStageDeadlineAt() != null
+                && !state.getStageDeadlineAt().isAfter(now);
+    }
+
+    private void timeout(EventStateEntity state, Instant now) {
+        state.setUpdatedAt(now);
+        if (state.getSteps() != null) {
+            var steps = new EnumMap<StepType, StepStatus>(StepType.class);
+            steps.putAll(state.getSteps());
+            steps.replaceAll((step, status) -> status == StepStatus.PROCESSING ? StepStatus.ERROR : status);
+            state.setSteps(steps);
+        }
+        fail(state, JsonNodeFactory.instance.objectNode().put("error_code", "STAGE_TIMEOUT")
+                .put("error_message", "Workflow stage exceeded its deadline"));
+    }
 
     @Override
     public EventStateResponse findByTransactionId(String transactionId) {
@@ -55,11 +114,16 @@ public class EventStateServiceImpl implements EventStateService {
                 || event.getStageIndex() != null && event.getStageIndex() != 0)) {
             throw new IllegalArgumentException("Initial request must start at stage zero without a failure outcome");
         }
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         return toResponse(eventStateRepository.updateAtomically(event.getTransactionId(), current -> {
             if ("CIA_API".equals(event.getProducer())) {
                 if (current.isPresent()) {
-                    validateReplay(current.get(), event);
+                    EventStateEntity existing = current.get();
+                    validateReplay(existing, event);
+                    if (expired(existing, now)) {
+                        timeout(existing, now);
+                        return Optional.of(existing);
+                    }
                     return Optional.empty();
                 }
                 EventStateEntity created = create(event, workflow.getFirst(), now);
@@ -71,6 +135,10 @@ public class EventStateServiceImpl implements EventStateService {
             }
             EventStateEntity state = current.get();
             validateCorrelation(state, event);
+            if (expired(state, now)) {
+                timeout(state, now);
+                return Optional.of(state);
+            }
             StepType step = StepType.valueOf(event.getProducer());
             int index = stageOf(step, workflow);
             if (index < 0 || (event.getStageIndex() != null && event.getStageIndex() != index)) {
@@ -123,10 +191,12 @@ public class EventStateServiceImpl implements EventStateService {
             state.setPayload(copy(merged));
             if (index + 1 == workflow.size()) {
                 state.setStatus(TransactionStatus.COMPLETED);
+                state.setStageDeadlineAt(null);
                 state.setResult(copy(merged));
                 enqueueFinal(state, EventOutcome.SUCCESS);
             } else {
                 state.setCurrentStage(index + 1);
+                state.setStageDeadlineAt(now.plusSeconds(stageTimeoutSeconds));
                 state.setSteps(processing(workflow.get(index + 1)));
                 enqueueStage(state, workflow.get(index + 1));
             }
@@ -144,6 +214,7 @@ public class EventStateServiceImpl implements EventStateService {
         state.setPayload(copy(event.getPayload()));
         state.setStatus(TransactionStatus.PROCESSING);
         state.setCurrentStage(0);
+        state.setStageDeadlineAt(now.plusSeconds(stageTimeoutSeconds));
         state.setSteps(processing(first));
         state.setStepResults(new LinkedHashMap<>());
         state.setCompletedStages(new LinkedHashMap<>());
@@ -155,6 +226,7 @@ public class EventStateServiceImpl implements EventStateService {
 
     private void fail(EventStateEntity state, JsonNode result) {
         state.setStatus(TransactionStatus.FAILED);
+        state.setStageDeadlineAt(null);
         state.setResult(copy(result));
         enqueueFinal(state, EventOutcome.FAILURE);
     }
@@ -203,7 +275,7 @@ public class EventStateServiceImpl implements EventStateService {
         outgoing.setOutcome(outcome);
         state.setPendingOutbox(state.getPendingOutbox() == null ? new LinkedHashMap<>()
                 : new LinkedHashMap<>(state.getPendingOutbox()));
-        state.getPendingOutbox().putIfAbsent(id, new OutboxEvent(id, topic, state.getTransactionId(), outgoing));
+        state.getPendingOutbox().putIfAbsent(id, new OutboxEvent(id, topic, state.getTransactionId(), outgoing, state.getUpdatedAt()));
         state.setOutboxPending(!state.getPendingOutbox().isEmpty());
     }
 

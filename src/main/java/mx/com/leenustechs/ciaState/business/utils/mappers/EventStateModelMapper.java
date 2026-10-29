@@ -26,6 +26,7 @@ public interface EventStateModelMapper {
     @Mapping(target = "initialPayload", ignore = true)
     @Mapping(target = "pendingOutbox", ignore = true)
     @Mapping(target = "outboxPending", ignore = true)
+    @Mapping(target = "stageDeadlineAt", ignore = true)
     EventStateEntity toEntity(EventStateModel model);
 
     @Mapping(target = "executionId", ignore = true)
@@ -37,6 +38,7 @@ public interface EventStateModelMapper {
     @Mapping(target = "completedStages", ignore = true)
     @Mapping(target = "stepResults", ignore = true)
     @Mapping(target = "createdAt", ignore = true)
+    @Mapping(target = "stageDeadlineAt", ignore = true)
     void updateFromModel(
             EventStateModel source,
             @MappingTarget EventStateEntity target);

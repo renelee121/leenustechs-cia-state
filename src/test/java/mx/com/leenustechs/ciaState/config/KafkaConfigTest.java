@@ -44,6 +44,10 @@ class KafkaConfigTest {
                 producer.getKeySerializer().serialize("lobby", "tx")));
         assertEquals(true, producer.getConfigurationProperties().get("enable.idempotence"));
         assertEquals("all", producer.getConfigurationProperties().get("acks"));
+        assertEquals(1_000L, producer.getConfigurationProperties().get("max.block.ms"));
+        assertEquals(10_000, producer.getConfigurationProperties().get("delivery.timeout.ms"));
+        assertEquals(5_000, producer.getConfigurationProperties().get("request.timeout.ms"));
+        assertEquals(0, producer.getConfigurationProperties().get("linger.ms"));
         assertEquals(false, consumer.getConfigurationProperties().get("enable.auto.commit"));
         assertTrue(config.getSaslJaasConfig().startsWith("org.apache.kafka.common.security.scram.ScramLoginModule"));
         assertEquals(ContainerProperties.AckMode.RECORD,
@@ -96,6 +100,33 @@ class KafkaConfigTest {
                 new CommonModel("tx", "SECURITY", OperationType.LOGIN, null));
         assertThrows(RuntimeException.class,
                 () -> recoverer.accept(record, null, new IllegalStateException("workflow temporarily unavailable")));
+    }
+
+    @Test
+    void configuredProducerBoundsCoverBothSynchronousEnqueueAndAsyncDelivery() {
+        KafkaConfig config = new KafkaConfig(mapper, "user", "password", "localhost:9093", "cia",
+                250L, 3_000, 2_000, 100);
+        var properties = config.producerFactory().getConfigurationProperties();
+        assertEquals(250L, properties.get("max.block.ms"));
+        assertEquals(3_000, properties.get("delivery.timeout.ms"));
+        assertEquals(2_000, properties.get("request.timeout.ms"));
+        assertEquals(100, properties.get("linger.ms"));
+    }
+
+    @Test
+    void rejectsIncoherentProducerLimitsBeforeConstructingAClient() {
+        assertThrows(IllegalArgumentException.class, () -> new KafkaConfig(mapper, "u", "p", "localhost:9093", "cia", 0, 3_000, 2_000, 0));
+        assertThrows(IllegalArgumentException.class, () -> new KafkaConfig(mapper, "u", "p", "localhost:9093", "cia", 100, 0, 2_000, 0));
+        assertThrows(IllegalArgumentException.class, () -> new KafkaConfig(mapper, "u", "p", "localhost:9093", "cia", 100, 3_000, 0, 0));
+        assertThrows(IllegalArgumentException.class, () -> new KafkaConfig(mapper, "u", "p", "localhost:9093", "cia", 100, 3_000, 2_000, -1));
+        assertThrows(IllegalArgumentException.class, () -> new KafkaConfig(mapper, "u", "p", "localhost:9093", "cia", 100, 2_000, 2_000, 1));
+    }
+
+    @Test
+    void listenerStartupCanBeDisabledForApplicationContextValidation() {
+        KafkaConfig config = new KafkaConfig(mapper, "u", "p", "localhost:9093", "cia");
+        org.springframework.test.util.ReflectionTestUtils.setField(config, "listenerAutoStartup", false);
+        assertFalse(config.kafkaListenerContainerFactory().createContainer("lobby").isAutoStartup());
     }
 
     private KafkaConfig config(KafkaTemplate<String, Object> template) {

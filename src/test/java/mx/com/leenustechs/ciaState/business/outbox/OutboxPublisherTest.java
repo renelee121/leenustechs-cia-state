@@ -4,6 +4,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -110,10 +114,16 @@ class OutboxPublisherTest {
 
     @Test
     void sendTimeoutKeepsDurableMessage() {
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.systemUTC());
         when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(new CompletableFuture<>());
         EventStateEntity before = copy(durableState.get());
         publisher.publishPending();
         assertEquals(before, durableState.get());
+        assertEquals(1, meters.get("cia.outbox.delivery.failures").counter().count());
+        assertEquals(1, meters.get("cia.outbox.delivery.timeouts").counter().count());
+        assertEquals(1, meters.get("cia.outbox.delivery.duration").timer().count());
+        assertEquals(1, meters.get("cia.outbox.poll.duration").timer().count());
     }
 
     @Test
@@ -262,6 +272,103 @@ class OutboxPublisherTest {
         new OutboxPublisher(memory, producer, 10, 1).publishPending();
         assertFalse(memory.findById("tx").orElseThrow().isOutboxPending());
         verify(producer, times(2)).publish(anyString(), eq("tx"), any(), eq(persistedId));
+    }
+
+    @Test
+    void successfulDeliveryReportsPageScopedBacklogAgeAndBoundedCardinalityMetrics() {
+        Instant now = Instant.parse("2026-10-28T12:00:00Z");
+        OutboxEvent timestamped = new OutboxEvent(event.id(), event.topic(), event.key(), event.event(), now.minusSeconds(120));
+        durableState.get().setPendingOutbox(new LinkedHashMap<>(Map.of(event.id(), timestamped)));
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.fixed(now, ZoneOffset.UTC));
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+        publisher.publishPending();
+        assertEquals(1, meters.get("cia.outbox.delivery.success").counter().count());
+        assertEquals(0, meters.get("cia.outbox.delivery.failures").counter().count());
+        assertEquals(1, meters.get("cia.outbox.delivery.duration").timer().count());
+        assertEquals(1, meters.get("cia.outbox.poll.duration").timer().count());
+        assertEquals(1, meters.get("cia.outbox.page.pending.events").tag("scope", "last_scan_page").gauge().value());
+        assertEquals(1, meters.get("cia.outbox.page.pending.workflows").gauge().value());
+        assertEquals(120, meters.get("cia.outbox.page.oldest.age").gauge().value());
+        assertEquals(0, meters.get("cia.outbox.page.unknown.timestamps").gauge().value());
+        assertTrue(durableState.get().getPendingOutbox().isEmpty());
+        assertTrue(meters.getMeters().stream().flatMap(m -> m.getId().getTags().stream())
+                .noneMatch(tag -> tag.getKey().matches(".*(transaction|event|topic).*")));
+    }
+
+    @Test
+    void legacyTimestampsAreExplicitlyUnknownAndEmptyNextPageResetsSnapshotGauges() {
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.systemUTC());
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+        publisher.publishPending();
+        assertEquals(1, meters.get("cia.outbox.page.unknown.timestamps").gauge().value());
+        assertEquals(0, meters.get("cia.outbox.page.oldest.age").gauge().value());
+        when(repository.scanPendingOutbox(anyInt(), nullable(String.class))).thenReturn(page(List.of(), null));
+        publisher.publishPending();
+        assertEquals(0, meters.get("cia.outbox.page.pending.events").gauge().value());
+        assertEquals(0, meters.get("cia.outbox.page.pending.workflows").gauge().value());
+        assertEquals(0, meters.get("cia.outbox.page.unknown.timestamps").gauge().value());
+    }
+
+    @Test
+    void corruptRowsAndInfrastructureFailuresHaveSeparateCounters() {
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.systemUTC());
+        when(repository.scanPendingOutbox(anyInt(), nullable(String.class)))
+                .thenReturn(new OutboxPage(List.of(), "bad", List.of("bad-a", "bad-b")))
+                .thenThrow(new IllegalStateException("database unavailable"));
+        publisher.publishPending();
+        publisher.publishPending();
+        assertEquals(2, meters.get("cia.outbox.scan.rejected").counter().count());
+        assertEquals(1, meters.get("cia.outbox.scan.failures").counter().count());
+        assertEquals(0, meters.get("cia.outbox.delivery.failures").counter().count());
+        assertEquals(2, meters.get("cia.outbox.poll.duration").timer().count());
+    }
+
+    @Test
+    void wrappedBrokerTimeoutIsRecordedAsFailureAndTimeoutWithoutAcknowledgement() {
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.systemUTC());
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(
+                CompletableFuture.failedFuture(new org.apache.kafka.common.errors.TimeoutException("unavailable")));
+        publisher.publishPending();
+        assertEquals(1, meters.get("cia.outbox.delivery.failures").counter().count());
+        assertEquals(1, meters.get("cia.outbox.delivery.timeouts").counter().count());
+        assertEquals(0, meters.get("cia.outbox.delivery.success").counter().count());
+        assertTrue(durableState.get().isOutboxPending());
+    }
+
+    @Test
+    void expiredStageCannotStartACommandButFinalNotificationRemainsDeliverable() {
+        Instant now = Instant.parse("2026-10-28T12:00:00Z");
+        durableState.get().setStageDeadlineAt(now);
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.fixed(now, ZoneOffset.UTC));
+        publisher.publishPending();
+        verifyNoInteractions(producer);
+        assertTrue(durableState.get().isOutboxPending());
+        assertEquals(0, meters.get("cia.outbox.delivery.failures").counter().count());
+        durableState.get().setStatus(TransactionStatus.FAILED);
+        OutboxEvent terminal = new OutboxEvent("final", KafkaTopics.LEENUSTECHS_CIA_FINAL_RESPONSE, "tx", event.event());
+        durableState.get().setPendingOutbox(new LinkedHashMap<>(Map.of("final", terminal)));
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+        publisher.publishPending();
+        verify(producer).publish(terminal.topic(), "tx", terminal.event(), "final");
+    }
+
+    @Test
+    void unexpiredStageStillPublishesAndFutureTimestampAgeNeverBecomesNegative() {
+        Instant now = Instant.parse("2026-10-28T12:00:00Z");
+        durableState.get().setStageDeadlineAt(now.plusSeconds(1));
+        OutboxEvent future = new OutboxEvent(event.id(), event.topic(), event.key(), event.event(), now.plusSeconds(30));
+        durableState.get().setPendingOutbox(new LinkedHashMap<>(Map.of(event.id(), future)));
+        var meters = new SimpleMeterRegistry();
+        publisher = new OutboxPublisher(repository, producer, 10, 1, meters, Clock.fixed(now, ZoneOffset.UTC));
+        when(producer.publish(anyString(), anyString(), any(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+        publisher.publishPending();
+        verify(producer).publish(event.topic(), "tx", event.event(), event.id());
+        assertEquals(0, meters.get("cia.outbox.page.oldest.age").gauge().value());
     }
 
     @Test

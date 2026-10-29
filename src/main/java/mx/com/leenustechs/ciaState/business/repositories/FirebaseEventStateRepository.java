@@ -32,6 +32,9 @@ import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
 import mx.com.leenustechs.ciaState.models.CommonModel;
 import mx.com.leenustechs.ciaState.models.records.OutboxEvent;
 import mx.com.leenustechs.ciaState.models.records.OutboxPage;
+import mx.com.leenustechs.ciaState.models.records.DeadlineCursor;
+import mx.com.leenustechs.ciaState.models.records.WorkflowDeadlinePage;
+import mx.com.leenustechs.ciaState.models.records.WorkflowPage;
 import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
@@ -145,6 +148,115 @@ public class FirebaseEventStateRepository implements EventStateRepository {
     }
 
     @Override
+    public WorkflowDeadlinePage scanExpiredWorkflows(Instant cutoff, int limit, DeadlineCursor after) {
+        if (limit < 1) throw new IllegalArgumentException("Deadline scan limit must be positive");
+        long cutoffMillis = Objects.requireNonNull(cutoff, "Deadline cutoff is required").toEpochMilli();
+        if (cutoffMillis < 0 || after != null && after.deadlineMillis() > cutoffMillis) {
+            return new WorkflowDeadlinePage(List.of(), null, List.of());
+        }
+        CompletableFuture<WorkflowDeadlinePage> future = new CompletableFuture<>();
+        Query indexed = firebaseDatabase.getReference(workflowPath).orderByChild("stageDeadlineAt");
+        Query page = after == null ? indexed.startAt(0).endAt(cutoffMillis).limitToFirst(limit)
+                : indexed.startAt(after.deadlineMillis(), after.transactionId()).endAt(cutoffMillis)
+                        .limitToFirst(Math.addExact(limit, 1));
+        page.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                try {
+                    List<EventStateEntity> states = new ArrayList<>();
+                    List<String> rejected = new ArrayList<>();
+                    DeadlineCursor nextCursor = null;
+                    int examined = 0;
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        if (examined == limit) break;
+                        String key = Objects.requireNonNull(child.getKey(), "Missing workflow key");
+                        Object rawDeadline = child.child("stageDeadlineAt").getValue();
+                        if (!(rawDeadline instanceof Number number) || !Double.isFinite(number.doubleValue())
+                                || number.doubleValue() < 0 || number.doubleValue() > cutoffMillis) {
+                            // Firebase's numeric range cannot return this: the page itself is invalid.
+                            throw new IllegalStateException("Invalid deadline index result");
+                        }
+                        double deadline = number.doubleValue();
+                        if (after != null && Double.compare(deadline, after.deadlineMillis()) == 0
+                                && key.equals(after.transactionId())) continue;
+                        examined++;
+                        nextCursor = new DeadlineCursor(deadline, key);
+                        try {
+                            EventStateEntity state = fromSnapshot(child).orElseThrow();
+                            if (deadline != Math.rint(deadline) || !key.equals(state.getTransactionId())
+                                    || state.getStageDeadlineAt() == null
+                                    || state.getStageDeadlineAt().toEpochMilli() != (long) deadline) {
+                                throw new IllegalStateException("Invalid workflow deadline identity");
+                            }
+                            states.add(state);
+                        } catch (RuntimeException invalidRow) {
+                            rejected.add(key);
+                        }
+                    }
+                    future.complete(new WorkflowDeadlinePage(states, nextCursor, rejected));
+                } catch (RuntimeException infrastructureFailure) {
+                    future.completeExceptionally(infrastructureFailure);
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new IllegalStateException(
+                        "Firebase RTDB deadline read cancelled: " + error.getCode()));
+            }
+        });
+        return await(future, "read expired workflows");
+    }
+
+    @Override
+    public WorkflowPage scanProcessingWorkflows(int limit, String afterTransactionId) {
+        if (limit < 1) throw new IllegalArgumentException("Workflow scan limit must be positive");
+        CompletableFuture<WorkflowPage> future = new CompletableFuture<>();
+        Query indexed = firebaseDatabase.getReference(workflowPath).orderByChild("status");
+        Query page = afterTransactionId == null
+                ? indexed.equalTo(TransactionStatus.PROCESSING.name()).limitToFirst(limit)
+                : indexed.startAt(TransactionStatus.PROCESSING.name(), afterTransactionId)
+                        .endAt(TransactionStatus.PROCESSING.name()).limitToFirst(Math.addExact(limit, 1));
+        page.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                try {
+                    List<EventStateEntity> states = new ArrayList<>();
+                    List<String> rejected = new ArrayList<>();
+                    String nextCursor = null;
+                    int examined = 0;
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        if (examined == limit) break;
+                        String key = Objects.requireNonNull(child.getKey(), "Missing workflow key");
+                        if (key.equals(afterTransactionId)) continue;
+                        examined++;
+                        nextCursor = key;
+                        try {
+                            EventStateEntity state = fromSnapshot(child).orElseThrow();
+                            if (!key.equals(state.getTransactionId()) || state.getStatus() != TransactionStatus.PROCESSING) {
+                                throw new IllegalStateException("Invalid active workflow identity");
+                            }
+                            states.add(state);
+                        } catch (RuntimeException invalidRow) {
+                            rejected.add(key);
+                        }
+                    }
+                    future.complete(new WorkflowPage(states, nextCursor, rejected));
+                } catch (RuntimeException infrastructureFailure) {
+                    future.completeExceptionally(infrastructureFailure);
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new IllegalStateException(
+                        "Firebase RTDB active workflow read cancelled: " + error.getCode()));
+            }
+        });
+        return await(future, "read active workflows");
+    }
+
+    @Override
     public AtomicStateUpdate updateAtomically(
             String transactionId,
             Function<Optional<EventStateEntity>, Optional<EventStateEntity>> mutation) {
@@ -241,6 +353,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         put(value, "command", enumName(entity.getCommand()));
         put(value, "status", enumName(entity.getStatus()));
         put(value, "currentStage", entity.getCurrentStage());
+        put(value, "stageDeadlineAt", instantToEpochMillis(entity.getStageDeadlineAt()));
         put(value, "steps", encodeSteps(entity.getSteps()));
         put(value, "completedStages", encodeCompletedStages(entity.getCompletedStages()));
         put(value, "stepResults", encodeStepResults(entity.getStepResults()));
@@ -272,6 +385,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         entity.setCommand(enumValue(OperationType.class, map.get("command")));
         entity.setStatus(enumValue(TransactionStatus.class, map.get("status")));
         entity.setCurrentStage(integerValue(map.get("currentStage")));
+        entity.setStageDeadlineAt(instantValue(map.get("stageDeadlineAt")));
         entity.setSteps(decodeSteps(map.get("steps")));
         entity.setCompletedStages(decodeCompletedStages(map.get("completedStages")));
         entity.setStepResults(decodeStepResults(map.get("stepResults")));
@@ -300,6 +414,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
             envelope.put("id", event.id());
             envelope.put("topic", event.topic());
             envelope.put("key", event.key());
+            put(envelope, "enqueuedAt", instantToEpochMillis(event.enqueuedAt()));
             // Keep a native projection for readers, plus an exact envelope: RTDB
             // prunes empty containers and turns dense numeric-key objects into arrays.
             Map<String, Object> nativeEvent = objectMapper.convertValue(event.event(), new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
@@ -329,7 +444,8 @@ public class FirebaseEventStateRepository implements EventStateRepository {
             if (!key.equals(id) || event == null || !Objects.equals(id, event.getEventId())) {
                 throw new IllegalStateException("Invalid workflow outbox identity");
             }
-            events.put(key, new OutboxEvent(id, stringValue(value.get("topic")), stringValue(value.get("key")), event));
+            events.put(key, new OutboxEvent(id, stringValue(value.get("topic")), stringValue(value.get("key")), event,
+                    instantValue(value.get("enqueuedAt"))));
         }
         return events;
     }

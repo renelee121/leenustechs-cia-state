@@ -17,6 +17,7 @@ public class EventStateEntity {
     private JsonNode initialPayload;
     private Map<String, OutboxEvent> pendingOutbox;
     private boolean outboxPending;
+    private Instant stageDeadlineAt;
     private String transactionId;
     private String producer;
     private OperationType command;
