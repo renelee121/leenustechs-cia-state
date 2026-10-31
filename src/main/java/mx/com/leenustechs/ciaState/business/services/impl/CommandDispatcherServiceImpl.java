@@ -37,6 +37,10 @@ public class CommandDispatcherServiceImpl implements CommandDispatcherService{
 
     @Override
     public CommonModelResponse execute(CommonModel event){
+        if (event == null) {
+            throw new IllegalArgumentException("event is required");
+        }
+        event.validate();
         EventOperation operation = getOperation(event.getCommand());
         CommonModelResponse response = operation.execute(event);
 

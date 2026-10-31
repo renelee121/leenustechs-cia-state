@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.Map;
 
 import lombok.Data;
+import mx.com.leenustechs.ciaState.models.records.OutboxEvent;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
 import mx.com.leenustechs.ciaState.models.types.StepType;
@@ -12,6 +13,11 @@ import tools.jackson.databind.JsonNode;
 
 @Data
 public class EventStateEntity {
+    private String executionId;
+    private JsonNode initialPayload;
+    private Map<String, OutboxEvent> pendingOutbox;
+    private boolean outboxPending;
+    private Instant stageDeadlineAt;
     private String transactionId;
     private String producer;
     private OperationType command;

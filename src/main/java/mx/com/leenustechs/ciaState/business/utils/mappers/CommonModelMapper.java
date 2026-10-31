@@ -19,6 +19,10 @@ public interface CommonModelMapper {
     @Mapping(target = "producer", source = "producer")
     @Mapping(target = "command", source = "command")
     @Mapping(target = "payload", source = "request.payload")
+    @Mapping(target = "eventId", ignore = true)
+    @Mapping(target = "executionId", ignore = true)
+    @Mapping(target = "stageIndex", ignore = true)
+    @Mapping(target = "outcome", ignore = true)
     CommonModel toModel(
             CommonModelRequest request,
             String transactionId,
@@ -26,5 +30,6 @@ public interface CommonModelMapper {
             OperationType command
     );
 
+    @Mapping(target = "status", ignore = true)
     CommonModelResponse toResponse(CommonModel model);
 }

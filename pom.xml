@@ -10,7 +10,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.0.9</version>
         <relativePath/>
     </parent>
 
@@ -144,13 +144,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!--google-->
-        <dependency>
-            <groupId>com.google.firebase</groupId>
-            <artifactId>firebase-admin</artifactId>
-            <version>${firebase-admin.version}</version>
-        </dependency>
-
     </dependencies>
 
     <build>
@@ -277,7 +270,7 @@
                                         [${maven.minimum.version},4.0.0)
                                     </version>
                                     <message>
-                                        Este proyecto requiere Maven 3.9.16
+                                        Este proyecto requiere Maven ${maven.minimum.version}
                                         o superior.
                                     </message>
                                 </requireMavenVersion>

@@ -5,7 +5,6 @@ import java.util.Set;
 
 import org.springframework.stereotype.Component;
 
-import mx.com.leenustechs.ciaState.business.adapters.out.KafkaProducerAdapter;
 import mx.com.leenustechs.ciaState.business.services.EventStateService;
 import mx.com.leenustechs.ciaState.business.utils.mappers.CommonModelMapper;
 import mx.com.leenustechs.ciaState.models.records.WorkflowStage;
@@ -26,10 +25,9 @@ public class LoginUseCase extends AbstractWorkflowUseCase {
 
     public LoginUseCase(
             CommonModelMapper commonModelMapper,
-            KafkaProducerAdapter kafkaProducerAdapter,
             EventStateService eventStateService) {
 
-        super(commonModelMapper, kafkaProducerAdapter, eventStateService);
+        super(commonModelMapper, eventStateService);
     }
 
     @Override

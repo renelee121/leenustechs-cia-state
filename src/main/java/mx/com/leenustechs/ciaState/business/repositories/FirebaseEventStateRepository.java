@@ -2,9 +2,12 @@ package mx.com.leenustechs.ciaState.business.repositories;
 
 import java.time.Instant;
 import java.util.EnumMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -21,10 +24,17 @@ import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
 import com.google.firebase.database.MutableData;
+import com.google.firebase.database.Query;
 import com.google.firebase.database.Transaction;
 import com.google.firebase.database.ValueEventListener;
 
 import mx.com.leenustechs.ciaState.models.entities.EventStateEntity;
+import mx.com.leenustechs.ciaState.models.CommonModel;
+import mx.com.leenustechs.ciaState.models.records.OutboxEvent;
+import mx.com.leenustechs.ciaState.models.records.OutboxPage;
+import mx.com.leenustechs.ciaState.models.records.DeadlineCursor;
+import mx.com.leenustechs.ciaState.models.records.WorkflowDeadlinePage;
+import mx.com.leenustechs.ciaState.models.records.WorkflowPage;
 import mx.com.leenustechs.ciaState.models.records.AtomicStateUpdate;
 import mx.com.leenustechs.ciaState.models.types.OperationType;
 import mx.com.leenustechs.ciaState.models.types.StepStatus;
@@ -91,6 +101,162 @@ public class FirebaseEventStateRepository implements EventStateRepository {
     }
 
     @Override
+    public OutboxPage scanPendingOutbox(int limit, String afterTransactionId) {
+        if (limit < 1) throw new IllegalArgumentException("Outbox limit must be positive");
+        CompletableFuture<OutboxPage> future = new CompletableFuture<>();
+        Query pending = firebaseDatabase.getReference(workflowPath).orderByChild("outboxPending");
+        Query page = afterTransactionId == null ? pending.equalTo(true).limitToFirst(limit)
+                : pending.startAt(true, afterTransactionId).endAt(true).limitToFirst(Math.addExact(limit, 1));
+        page.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                try {
+                    List<EventStateEntity> states = new ArrayList<>();
+                    List<String> rejected = new ArrayList<>();
+                    String nextCursor = null;
+                    int examined = 0;
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        String key = Objects.requireNonNull(child.getKey(), "Missing workflow key");
+                        if (Objects.equals(afterTransactionId, key)) continue;
+                        if (examined == limit) break;
+                        examined++;
+                        nextCursor = key;
+                        try {
+                            EventStateEntity state = fromSnapshot(child).orElseThrow();
+                            if (!key.equals(state.getTransactionId())) {
+                                throw new IllegalStateException("Workflow identity does not match its database key");
+                            }
+                            states.add(state);
+                        } catch (RuntimeException invalidRow) {
+                            // Keep the original data for repair; only expose its key to operators.
+                            rejected.add(key);
+                        }
+                    }
+                    future.complete(new OutboxPage(states, nextCursor, rejected));
+                } catch (RuntimeException infrastructureFailure) {
+                    future.completeExceptionally(infrastructureFailure);
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new IllegalStateException(
+                        "Firebase RTDB outbox read cancelled: " + error.getCode()));
+            }
+        });
+        return await(future, "read pending outbox");
+    }
+
+    @Override
+    public WorkflowDeadlinePage scanExpiredWorkflows(Instant cutoff, int limit, DeadlineCursor after) {
+        if (limit < 1) throw new IllegalArgumentException("Deadline scan limit must be positive");
+        long cutoffMillis = Objects.requireNonNull(cutoff, "Deadline cutoff is required").toEpochMilli();
+        if (cutoffMillis < 0 || after != null && after.deadlineMillis() > cutoffMillis) {
+            return new WorkflowDeadlinePage(List.of(), null, List.of());
+        }
+        CompletableFuture<WorkflowDeadlinePage> future = new CompletableFuture<>();
+        Query indexed = firebaseDatabase.getReference(workflowPath).orderByChild("stageDeadlineAt");
+        Query page = after == null ? indexed.startAt(0).endAt(cutoffMillis).limitToFirst(limit)
+                : indexed.startAt(after.deadlineMillis(), after.transactionId()).endAt(cutoffMillis)
+                        .limitToFirst(Math.addExact(limit, 1));
+        page.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                try {
+                    List<EventStateEntity> states = new ArrayList<>();
+                    List<String> rejected = new ArrayList<>();
+                    DeadlineCursor nextCursor = null;
+                    int examined = 0;
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        if (examined == limit) break;
+                        String key = Objects.requireNonNull(child.getKey(), "Missing workflow key");
+                        Object rawDeadline = child.child("stageDeadlineAt").getValue();
+                        if (!(rawDeadline instanceof Number number) || !Double.isFinite(number.doubleValue())
+                                || number.doubleValue() < 0 || number.doubleValue() > cutoffMillis) {
+                            // Firebase's numeric range cannot return this: the page itself is invalid.
+                            throw new IllegalStateException("Invalid deadline index result");
+                        }
+                        double deadline = number.doubleValue();
+                        if (after != null && Double.compare(deadline, after.deadlineMillis()) == 0
+                                && key.equals(after.transactionId())) continue;
+                        examined++;
+                        nextCursor = new DeadlineCursor(deadline, key);
+                        try {
+                            EventStateEntity state = fromSnapshot(child).orElseThrow();
+                            if (deadline != Math.rint(deadline) || !key.equals(state.getTransactionId())
+                                    || state.getStageDeadlineAt() == null
+                                    || state.getStageDeadlineAt().toEpochMilli() != (long) deadline) {
+                                throw new IllegalStateException("Invalid workflow deadline identity");
+                            }
+                            states.add(state);
+                        } catch (RuntimeException invalidRow) {
+                            rejected.add(key);
+                        }
+                    }
+                    future.complete(new WorkflowDeadlinePage(states, nextCursor, rejected));
+                } catch (RuntimeException infrastructureFailure) {
+                    future.completeExceptionally(infrastructureFailure);
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new IllegalStateException(
+                        "Firebase RTDB deadline read cancelled: " + error.getCode()));
+            }
+        });
+        return await(future, "read expired workflows");
+    }
+
+    @Override
+    public WorkflowPage scanProcessingWorkflows(int limit, String afterTransactionId) {
+        if (limit < 1) throw new IllegalArgumentException("Workflow scan limit must be positive");
+        CompletableFuture<WorkflowPage> future = new CompletableFuture<>();
+        Query indexed = firebaseDatabase.getReference(workflowPath).orderByChild("status");
+        Query page = afterTransactionId == null
+                ? indexed.equalTo(TransactionStatus.PROCESSING.name()).limitToFirst(limit)
+                : indexed.startAt(TransactionStatus.PROCESSING.name(), afterTransactionId)
+                        .endAt(TransactionStatus.PROCESSING.name()).limitToFirst(Math.addExact(limit, 1));
+        page.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                try {
+                    List<EventStateEntity> states = new ArrayList<>();
+                    List<String> rejected = new ArrayList<>();
+                    String nextCursor = null;
+                    int examined = 0;
+                    for (DataSnapshot child : snapshot.getChildren()) {
+                        if (examined == limit) break;
+                        String key = Objects.requireNonNull(child.getKey(), "Missing workflow key");
+                        if (key.equals(afterTransactionId)) continue;
+                        examined++;
+                        nextCursor = key;
+                        try {
+                            EventStateEntity state = fromSnapshot(child).orElseThrow();
+                            if (!key.equals(state.getTransactionId()) || state.getStatus() != TransactionStatus.PROCESSING) {
+                                throw new IllegalStateException("Invalid active workflow identity");
+                            }
+                            states.add(state);
+                        } catch (RuntimeException invalidRow) {
+                            rejected.add(key);
+                        }
+                    }
+                    future.complete(new WorkflowPage(states, nextCursor, rejected));
+                } catch (RuntimeException infrastructureFailure) {
+                    future.completeExceptionally(infrastructureFailure);
+                }
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(new IllegalStateException(
+                        "Firebase RTDB active workflow read cancelled: " + error.getCode()));
+            }
+        });
+        return await(future, "read active workflows");
+    }
+
+    @Override
     public AtomicStateUpdate updateAtomically(
             String transactionId,
             Function<Optional<EventStateEntity>, Optional<EventStateEntity>> mutation) {
@@ -106,6 +272,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
                     @Override
                     public Transaction.Result doTransaction(MutableData currentData) {
                         applied.set(false);
+                        mutationFailure.set(null);
 
                         try {
                             Optional<EventStateEntity> current =
@@ -114,19 +281,9 @@ public class FirebaseEventStateRepository implements EventStateRepository {
                             Optional<EventStateEntity> desired = mutation.apply(current);
 
                             if (desired.isEmpty()) {
-                                /*
-                                 * RTDB transaction callbacks may initially be
-                                 * invoked with null even when server data exists.
-                                 * Returning success with the unchanged null value
-                                 * lets the server detect a hash mismatch and retry
-                                 * with the actual value. If the workflow truly does
-                                 * not exist this commits as a harmless no-op.
-                                 */
-                                if (current.isEmpty()) {
-                                    return Transaction.success(currentData);
-                                }
-
-                                return Transaction.abort();
+                                // A nonempty local cache can be stale as well. A no-op commit
+                                // lets the server reject its hash and retry with current data.
+                                return Transaction.success(currentData);
                             }
 
                             currentData.setValue(toNativeValue(desired.get()));
@@ -134,7 +291,9 @@ public class FirebaseEventStateRepository implements EventStateRepository {
                             return Transaction.success(currentData);
                         } catch (RuntimeException exception) {
                             mutationFailure.set(exception);
-                            return Transaction.abort();
+                            // Validate a server-confirmed snapshot before exposing a domain
+                            // error; stale local state may be retried with a different outcome.
+                            return Transaction.success(currentData);
                         }
                     }
 
@@ -176,6 +335,7 @@ public class FirebaseEventStateRepository implements EventStateRepository {
     }
 
     DatabaseReference reference(String transactionId) {
+        FirebaseValueValidator.validateWorkflowPath(workflowPath, transactionId);
         return firebaseDatabase
                 .getReference(workflowPath)
                 .child(transactionId);
@@ -185,19 +345,24 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         Map<String, Object> value = new LinkedHashMap<>();
 
         put(value, "transactionId", entity.getTransactionId());
+        put(value, "executionId", entity.getExecutionId());
+        putJson(value, "initialPayload", entity.getInitialPayload());
+        put(value, "pendingOutbox", encodeOutbox(entity.getPendingOutbox()));
+        put(value, "outboxPending", entity.getPendingOutbox() != null && !entity.getPendingOutbox().isEmpty());
         put(value, "producer", entity.getProducer());
         put(value, "command", enumName(entity.getCommand()));
         put(value, "status", enumName(entity.getStatus()));
         put(value, "currentStage", entity.getCurrentStage());
+        put(value, "stageDeadlineAt", instantToEpochMillis(entity.getStageDeadlineAt()));
         put(value, "steps", encodeSteps(entity.getSteps()));
         put(value, "completedStages", encodeCompletedStages(entity.getCompletedStages()));
         put(value, "stepResults", encodeStepResults(entity.getStepResults()));
-        put(value, "payload", jsonToNative(entity.getPayload()));
-        put(value, "result", jsonToNative(entity.getResult()));
+        putJson(value, "payload", entity.getPayload());
+        putJson(value, "result", entity.getResult());
         put(value, "createdAt", instantToEpochMillis(entity.getCreatedAt()));
         put(value, "updatedAt", instantToEpochMillis(entity.getUpdatedAt()));
 
-        return value;
+        return FirebaseValueValidator.prepare(workflowPath, entity.getTransactionId(), value);
     }
 
     Optional<EventStateEntity> fromNativeValue(Object nativeValue) {
@@ -212,15 +377,20 @@ public class FirebaseEventStateRepository implements EventStateRepository {
 
         EventStateEntity entity = new EventStateEntity();
         entity.setTransactionId(stringValue(map.get("transactionId")));
+        entity.setExecutionId(stringValue(map.get("executionId")));
+        entity.setInitialPayload(readJson(map, "initialPayload"));
+        entity.setPendingOutbox(decodeOutbox(map.get("pendingOutbox")));
+        entity.setOutboxPending(!entity.getPendingOutbox().isEmpty());
         entity.setProducer(stringValue(map.get("producer")));
         entity.setCommand(enumValue(OperationType.class, map.get("command")));
         entity.setStatus(enumValue(TransactionStatus.class, map.get("status")));
         entity.setCurrentStage(integerValue(map.get("currentStage")));
+        entity.setStageDeadlineAt(instantValue(map.get("stageDeadlineAt")));
         entity.setSteps(decodeSteps(map.get("steps")));
         entity.setCompletedStages(decodeCompletedStages(map.get("completedStages")));
         entity.setStepResults(decodeStepResults(map.get("stepResults")));
-        entity.setPayload(nativeToJson(map.get("payload")));
-        entity.setResult(nativeToJson(map.get("result")));
+        entity.setPayload(readJson(map, "payload"));
+        entity.setResult(readJson(map, "result"));
         entity.setCreatedAt(instantValue(map.get("createdAt")));
         entity.setUpdatedAt(instantValue(map.get("updatedAt")));
 
@@ -233,6 +403,51 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         }
 
         return fromNativeValue(snapshot.getValue());
+    }
+
+    private Map<String, Object> encodeOutbox(Map<String, OutboxEvent> events) {
+        Map<String, Object> encoded = new LinkedHashMap<>();
+        if (events == null) return encoded;
+        for (Map.Entry<String, OutboxEvent> entry : events.entrySet()) {
+            OutboxEvent event = entry.getValue();
+            Map<String, Object> envelope = new LinkedHashMap<>();
+            envelope.put("id", event.id());
+            envelope.put("topic", event.topic());
+            envelope.put("key", event.key());
+            put(envelope, "enqueuedAt", instantToEpochMillis(event.enqueuedAt()));
+            // Keep a native projection for readers, plus an exact envelope: RTDB
+            // prunes empty containers and turns dense numeric-key objects into arrays.
+            Map<String, Object> nativeEvent = objectMapper.convertValue(event.event(), new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            nativeEvent.put("payload", jsonToNative(event.event().getPayload()));
+            envelope.put("event", nativeEvent);
+            envelope.put("eventJson", objectMapper.writeValueAsString(event.event()));
+            encoded.put(entry.getKey(), envelope);
+        }
+        return encoded;
+    }
+
+    private Map<String, OutboxEvent> decodeOutbox(Object rawValue) {
+        Map<String, OutboxEvent> events = new LinkedHashMap<>();
+        if (rawValue == null) return events;
+        if (!(rawValue instanceof Map<?, ?> rawEvents)) {
+            throw new IllegalStateException("Invalid workflow outbox");
+        }
+        for (Map.Entry<?, ?> entry : rawEvents.entrySet()) {
+            if (!(entry.getValue() instanceof Map<?, ?> value)) {
+                throw new IllegalStateException("Invalid workflow outbox event");
+            }
+            String id = stringValue(value.get("id"));
+            String key = String.valueOf(entry.getKey());
+            CommonModel event = value.containsKey("eventJson")
+                    ? objectMapper.readValue(String.valueOf(value.get("eventJson")), CommonModel.class)
+                    : objectMapper.convertValue(value.get("event"), CommonModel.class);
+            if (!key.equals(id) || event == null || !Objects.equals(id, event.getEventId())) {
+                throw new IllegalStateException("Invalid workflow outbox identity");
+            }
+            events.put(key, new OutboxEvent(id, stringValue(value.get("topic")), stringValue(value.get("key")), event,
+                    instantValue(value.get("enqueuedAt"))));
+        }
+        return events;
     }
 
     private Map<String, String> decodeStepResults(Object rawValue) {
@@ -250,7 +465,11 @@ public class FirebaseEventStateRepository implements EventStateRepository {
                 if (rawResult instanceof Map<?, ?> wrapper
                         && Boolean.TRUE.equals(wrapper.get(STEP_RESULT_PRESENT))) {
 
-                    if (!wrapper.containsKey(STEP_RESULT_PAYLOAD)) {
+                    if (wrapper.containsKey("json")) {
+                        String json = String.valueOf(wrapper.get("json"));
+                        objectMapper.readTree(json); // Fail explicitly on corrupt canonical data.
+                        results.put(key, json);
+                    } else if (!wrapper.containsKey(STEP_RESULT_PAYLOAD)) {
                         results.put(key, "null");
                     } else {
                         results.put(
@@ -282,12 +501,14 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         for (Map.Entry<String, String> entry : stepResults.entrySet()) {
             Map<String, Object> wrapper = new LinkedHashMap<>();
             wrapper.put(STEP_RESULT_PRESENT, true);
+            wrapper.put("json", entry.getValue());
 
             try {
                 Object payload = objectMapper.readValue(entry.getValue(), Object.class);
 
                 if (payload != null) {
-                    wrapper.put(STEP_RESULT_PAYLOAD, payload);
+                    Object projection = jsonToNative(objectMapper.readTree(entry.getValue()));
+                    if (projection != null) wrapper.put(STEP_RESULT_PAYLOAD, projection);
                 }
             } catch (Exception exception) {
                 throw new IllegalStateException(
@@ -334,20 +555,27 @@ public class FirebaseEventStateRepository implements EventStateRepository {
 
         Map<String, String> encoded = new LinkedHashMap<>();
         completedStages.forEach((stage, status) ->
-                encoded.put(String.valueOf(stage), status.name()));
+                encoded.put("stage_" + stage, status.name()));
         return encoded;
     }
 
     private Map<Integer, StepStatus> decodeCompletedStages(Object rawValue) {
-        if (!(rawValue instanceof Map<?, ?> rawStages)) {
-            return null;
-        }
-
+        if (rawValue == null) return null;
         Map<Integer, StepStatus> stages = new LinkedHashMap<>();
-        rawStages.forEach((key, value) ->
-                stages.put(
-                        Integer.valueOf(String.valueOf(key)),
-                        StepStatus.valueOf(String.valueOf(value))));
+        if (rawValue instanceof List<?> list) {
+            // RTDB materializes dense numeric-key objects from older versions as lists.
+            for (int i = 0; i < list.size(); i++) {
+                if (list.get(i) != null) stages.put(i, StepStatus.valueOf(String.valueOf(list.get(i))));
+            }
+        } else if (rawValue instanceof Map<?, ?> rawStages) {
+            rawStages.forEach((key, value) -> {
+                String stage = String.valueOf(key);
+                if (stage.startsWith("stage_")) stage = stage.substring(6);
+                stages.put(Integer.valueOf(stage), StepStatus.valueOf(String.valueOf(value)));
+            });
+        } else {
+            throw new IllegalStateException("Invalid completed workflow stages");
+        }
         return stages;
     }
 
@@ -359,12 +587,35 @@ public class FirebaseEventStateRepository implements EventStateRepository {
         return objectMapper.convertValue(value, JsonNode.class);
     }
 
-    private Object jsonToNative(JsonNode value) {
-        if (value == null || value.isNull()) {
-            return null;
-        }
+    private void putJson(Map<String, Object> target, String name, JsonNode value) {
+        if (value == null) return;
+        put(target, name, jsonToNative(value));
+        target.put(name + "Json", objectMapper.writeValueAsString(value));
+    }
 
+    private JsonNode readJson(Map<?, ?> source, String name) {
+        if (source.containsKey(name + "Json")) {
+            return objectMapper.readTree(String.valueOf(source.get(name + "Json")));
+        }
+        return nativeToJson(source.get(name));
+    }
+
+    private Object jsonToNative(JsonNode value) {
+        if (value == null || value.isNull() || !firebaseSafeProjection(value)) return null;
         return objectMapper.convertValue(value, Object.class);
+    }
+
+    private boolean firebaseSafeProjection(JsonNode value) {
+        if (value.isObject()) {
+            for (Map.Entry<String, JsonNode> entry : value.properties()) {
+                if (entry.getKey().isEmpty() || entry.getKey().chars()
+                        .anyMatch(c -> c < 32 || c == 127 || ".#$[]/".indexOf(c) >= 0)
+                        || !firebaseSafeProjection(entry.getValue())) return false;
+            }
+        } else if (value.isArray()) {
+            for (JsonNode child : value) if (!firebaseSafeProjection(child)) return false;
+        }
+        return true;
     }
 
     private Instant instantValue(Object value) {
